@@ -15,3 +15,4 @@ const firebaseConfig = {
 const app = firebaseConfig.databaseURL ? initializeApp(firebaseConfig) : null;
 export const database = app ? getDatabase(app) : null;
 
+

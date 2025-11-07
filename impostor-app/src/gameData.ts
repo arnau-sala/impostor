@@ -181,3 +181,4 @@ export const getRandomPlayer = (categoryId: string): PlayerWithClue | null => {
   return category.players[randomIndex];
 };
 
+

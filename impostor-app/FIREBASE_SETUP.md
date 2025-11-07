@@ -116,3 +116,4 @@ VITE_BASE_PATH=/
 - **No se conecta**: Verifica que `VITE_FIREBASE_DATABASE_URL` esté correcto
 - **Variables no se cargan**: Asegúrate de reiniciar el servidor después de cambiar `.env.local`
 
+
