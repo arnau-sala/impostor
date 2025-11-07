@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Juego social en línea para descubrir al impostor. Crea salas rápidas y juega desde tu móvil." />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <title>Impostor · Juego Online</title>
+    <script>
+      // BLOQUEO ULTRA AGRESIVO de extensiones de contraseñas
+      (function() {
+        const blockExtensionSelectors = [
+          '[class*="lastpass"]',
+          '[id*="lastpass"]',
+          '[class*="1password"]',
+          '[id*="1password"]',
+          '[class*="bitwarden"]',
+          '[id*="bitwarden"]',
+          '[class*="dashlane"]',
+          '[id*="dashlane"]',
+          '[class*="LastPass"]',
+          '[class*="1Password"]',
+          '[class*="Bitwarden"]',
+          '[class*="Dashlane"]',
+          'iframe[src*="lastpass"]',
+          'iframe[src*="1password"]',
+          'iframe[src*="bitwarden"]',
+          'iframe[src*="dashlane"]',
+          'iframe[src*="chrome-extension"]',
+          '[data-lastpass]',
+          '[data-1password]',
+          '[data-bitwarden]',
+          '[data-dashlane]'
+        ];
+        
+        function removeExtensionElements() {
+          blockExtensionSelectors.forEach(function(selector) {
+            try {
+              const elements = document.querySelectorAll(selector);
+              elements.forEach(function(el) {
+                if (el.closest && el.closest('.join-section')) {
+                  el.style.cssText = 'display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; position: absolute !important; left: -9999px !important; width: 0 !important; height: 0 !important; z-index: -99999 !important;';
+                  el.remove();
+                }
+              });
+            } catch(e) {}
+          });
+          
+          // Bloquear específicamente cualquier input en join-section que no sea nuestro
+          try {
+            const joinSection = document.querySelector('.join-section');
+            if (joinSection) {
+              const allInputs = joinSection.querySelectorAll('input');
+              allInputs.forEach(function(input) {
+                if (input.id !== 'room-code-hidden') {
+                  input.style.cssText = 'display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; position: absolute !important; left: -9999px !important; width: 0 !important; height: 0 !important;';
+                  input.remove();
+                }
+              });
+            }
+          } catch(e) {}
+        }
+        
+        const observer = new MutationObserver(function(mutations) {
+          removeExtensionElements();
+        });
+        
+        // Ejecutar inmediatamente
+        removeExtensionElements();
+        
+        // Observar cambios
+        if (document.body) {
+          observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['class', 'id', 'src', 'data-lastpass', 'data-1password', 'data-bitwarden', 'data-dashlane']
+          });
+        } else {
+          document.addEventListener('DOMContentLoaded', function() {
+            removeExtensionElements();
+            observer.observe(document.body, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+              attributeFilter: ['class', 'id', 'src', 'data-lastpass', 'data-1password', 'data-bitwarden', 'data-dashlane']
+            });
+          });
+        }
+        
+        // Ejecutar MUY frecuentemente como respaldo
+        setInterval(removeExtensionElements, 100);
+        
+        // También en eventos de focus
+        document.addEventListener('focusin', function(e) {
+          if (e.target && (e.target.closest && e.target.closest('.join-section'))) {
+            removeExtensionElements();
+          }
+        }, true);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
