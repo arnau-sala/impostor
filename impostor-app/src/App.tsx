@@ -30,6 +30,36 @@ const sanitizeWord = (raw: string) => raw.trim().slice(0, 30);
 
 const getAlivePlayers = (state: GameState) => state.players.filter((p) => p.alive);
 
+const getPlayerOrder = (state: GameState): PlayerState[] => {
+  if (state.firstSpeakerIndex === undefined || state.firstSpeakerIndex < 0 || state.firstSpeakerIndex >= state.players.length) {
+    // Si no hay firstSpeakerIndex, devolver jugadores ordenados por ID para consistencia
+    return [...state.players].sort((a, b) => a.id.localeCompare(b.id));
+  }
+  
+  // Ordenar jugadores por ID para garantizar orden consistente entre todos los clientes
+  const sortedPlayers = [...state.players].sort((a, b) => a.id.localeCompare(b.id));
+  
+  // Encontrar el índice del primer speaker en el array ordenado
+  const firstSpeakerPlayer = state.players[state.firstSpeakerIndex];
+  if (!firstSpeakerPlayer) {
+    return sortedPlayers;
+  }
+  
+  const startIndexInSorted = sortedPlayers.findIndex(p => p.id === firstSpeakerPlayer.id);
+  if (startIndexInSorted === -1) {
+    return sortedPlayers;
+  }
+  
+  // Empezar desde el primer speaker y seguir el orden circular
+  const ordered: PlayerState[] = [];
+  for (let i = 0; i < sortedPlayers.length; i++) {
+    const index = (startIndexInSorted + i) % sortedPlayers.length;
+    ordered.push(sortedPlayers[index]);
+  }
+  
+  return ordered;
+};
+
 const cluesForRound = (clues: GameClue[] | undefined, round: number) => {
   if (!clues || !Array.isArray(clues)) return [];
   return clues.filter((item) => item.round === round);
@@ -168,6 +198,7 @@ const App = () => {
   const [activeTimeTab, setActiveTimeTab] = useState<'turno' | 'votaciones' | null>(null);
   const [joinCodeInput, setJoinCodeInput] = useState('');
   const [clueInput, setClueInput] = useState('');
+  const [countdown, setCountdown] = useState<number | null>(null);
 
   const roomStateRef = useRef<ReturnType<typeof ref> | null>(null);
   const roomEventsRef = useRef<ReturnType<typeof ref> | null>(null);
@@ -211,6 +242,17 @@ const App = () => {
   // Función para normalizar el estado de Firebase (asegurar que todos los campos requeridos existan)
   const normalizeState = useCallback((state: any): GameState | null => {
     if (!state) return null;
+    
+    // Normalizar jugadores y asegurar que isImpostor coincida con impostorId
+    const players = Array.isArray(state.players) ? state.players : [];
+    const impostorId = state.impostorId;
+    
+    // Sincronizar isImpostor con impostorId para garantizar consistencia
+    const normalizedPlayers = players.map((player: any) => ({
+      ...player,
+      isImpostor: impostorId ? player.id === impostorId : false,
+    }));
+    
     return {
       code: state.code || '',
       topic: state.topic || '',
@@ -221,8 +263,8 @@ const App = () => {
       timeLimit: state.timeLimit,
       votingTimeLimit: state.votingTimeLimit,
       hostId: state.hostId || '',
-      impostorId: state.impostorId,
-      players: Array.isArray(state.players) ? state.players : [],
+      impostorId: impostorId,
+      players: normalizedPlayers,
       phase: state.phase || 'lobby',
       currentTurnIndex: state.currentTurnIndex ?? -1,
       firstSpeakerIndex: state.firstSpeakerIndex,
@@ -963,6 +1005,35 @@ const App = () => {
     });
   }, [gameState, isHost, patchState]);
 
+  // Auto-avanzar desde wordReveal después de 10 segundos con cuenta regresiva
+  useEffect(() => {
+    if (!gameState || gameState.phase !== 'wordReveal') {
+      setCountdown(null);
+      return;
+    }
+
+    // Iniciar cuenta regresiva desde 10
+    setCountdown(10);
+
+    const interval = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev === null || prev <= 1) {
+          clearInterval(interval);
+          if (isHost) {
+            handleBeginClues();
+          }
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      clearInterval(interval);
+      setCountdown(null);
+    };
+  }, [gameState?.phase, gameState?.round, isHost, handleBeginClues]);
+
   const handleOpenVoting = useCallback(() => {
     if (!gameState || !isHost) return;
     const playersReady = getAlivePlayers(gameState).length;
@@ -1464,7 +1535,7 @@ const App = () => {
         </section>
         <section className="players">
           <h3>Jugadores ({gameState.players.length}/{MAX_PLAYERS})</h3>
-          <ul>
+          <ul className={!isCurrentHost ? 'non-interactive' : ''}>
             {gameState.players.map((player) => (
               <li key={player.id}>
                 <span>{player.name}</span>
@@ -1675,29 +1746,28 @@ const App = () => {
 
   const renderWordReveal = () => {
     if (!gameState || !currentPlayer) return null;
-    const readyPlayers = gameState.players.filter((player) => player.readyForRound).length;
-    const everyoneReady = readyPlayers === gameState.players.length;
+
+    const playerOrder = getPlayerOrder(gameState);
 
     return (
       <div className="card">
         <header className="header">
-          <h2>Ronda {gameState.round}</h2>
-          <button type="button" className="link" onClick={handleLeaveRoom}>
-            Salir
+          <button type="button" className="close-button" onClick={handleLeaveRoom} aria-label="Cerrar">
+            ×
           </button>
         </header>
         <section className="reveal">
           <p className="topic">Temática: <strong>{gameState.topic}</strong></p>
           {currentPlayer.isImpostor ? (
             <div className="impostor-card">
-              <h3>Eres el impostor</h3>
-              <p>Escucha con atención las pistas y mezcla tus palabras para no ser descubierto.</p>
-              {gameState.showClue && gameState.selectedPlayerClue && (
-                <div className="clue-hint">
-                  <p className="clue-label">Pista:</p>
-                  <p className="clue-text">{gameState.selectedPlayerClue}</p>
-                </div>
-              )}
+              <h3>
+                {gameState.showClue && gameState.selectedPlayerClue ? (
+                  <>Pista: <span style={{ fontWeight: 'normal', fontSize: '0.9em' }}>{gameState.selectedPlayerClue}</span></>
+                ) : (
+                  'No hay pista'
+                )}
+              </h3>
+              <p className="keyword">IMPOSTOR</p>
             </div>
           ) : (
             <div className="keyword-card">
@@ -1705,24 +1775,25 @@ const App = () => {
               <p className="keyword">{gameState.secretWord}</p>
             </div>
           )}
-          <button
-            type="button"
-            className="primary"
-            onClick={() => handleReadyToggle(!currentPlayer.readyForRound)}
-          >
-            {currentPlayer.readyForRound ? 'Cancelar listo' : 'Estoy listo' }
-          </button>
+          <div className="player-order-container">
+            <p className="player-order-label">Orden de turnos:</p>
+            <div className="player-order-list">
+              {playerOrder.map((player, index) => (
+                <div key={player.id} className="player-order-item">
+                  <span className="player-order-number">{index + 1}.</span>
+                  <span className="player-order-name">{player.name}</span>
+                  {player.id === playerId && <span className="badge badge-you">Tú</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+          {countdown !== null && (
+            <div className="countdown-container">
+              <p className="countdown-label">Empezando en...</p>
+              <div className="countdown-number">{countdown}</div>
+            </div>
+          )}
         </section>
-        {isHost && (
-          <footer className="footer">
-            <p>
-              Listos: {readyPlayers}/{gameState.players.length}
-            </p>
-            <button type="button" className="primary" onClick={handleBeginClues} disabled={!everyoneReady}>
-              Empezar ronda de pistas
-            </button>
-          </footer>
-        )}
       </div>
     );
   };
@@ -1741,11 +1812,11 @@ const App = () => {
       <div className="card">
         <header className="header">
           <div>
-            <h2>Ronda {gameState.round}</h2>
+            <h2></h2>
             <p className="subtitle">Tema: {gameState.topic}</p>
           </div>
-          <button type="button" className="link" onClick={handleLeaveRoom}>
-            Salir
+          <button type="button" className="close-button" onClick={handleLeaveRoom} aria-label="Cerrar">
+            ×
           </button>
         </header>
         <section className="clues">
@@ -1812,8 +1883,8 @@ const App = () => {
       <div className="card">
         <header className="header">
           <h2>Votación</h2>
-          <button type="button" className="link" onClick={handleLeaveRoom}>
-            Salir
+          <button type="button" className="close-button" onClick={handleLeaveRoom} aria-label="Cerrar">
+            ×
           </button>
         </header>
         <section className="vote-grid">
@@ -1869,7 +1940,7 @@ const App = () => {
         <section className="reveal-result">
           <h3>
             {eliminated?.name ?? 'Jugador desconocido'} era
-            {gameState.elimination.wasImpostor ? ' el impostor 🎉' : ' inocente 😱'}
+            {gameState.elimination.wasImpostor ? ' el impostor' : ' inocente'}
           </h3>
           {gameState.elimination.wasImpostor && (
             <p>
