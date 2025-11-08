@@ -32,29 +32,22 @@ const getAlivePlayers = (state: GameState) => state.players.filter((p) => p.aliv
 
 const getPlayerOrder = (state: GameState): PlayerState[] => {
   if (state.firstSpeakerIndex === undefined || state.firstSpeakerIndex < 0 || state.firstSpeakerIndex >= state.players.length) {
-    // Si no hay firstSpeakerIndex, devolver jugadores ordenados por ID para consistencia
-    return [...state.players].sort((a, b) => a.id.localeCompare(b.id));
+    // Si no hay firstSpeakerIndex, devolver jugadores en el orden del array (orden de llegada)
+    return state.players;
   }
   
-  // Ordenar jugadores por ID para garantizar orden consistente entre todos los clientes
-  const sortedPlayers = [...state.players].sort((a, b) => a.id.localeCompare(b.id));
-  
-  // Encontrar el índice del primer speaker en el array ordenado
-  const firstSpeakerPlayer = state.players[state.firstSpeakerIndex];
-  if (!firstSpeakerPlayer) {
-    return sortedPlayers;
-  }
-  
-  const startIndexInSorted = sortedPlayers.findIndex(p => p.id === firstSpeakerPlayer.id);
-  if (startIndexInSorted === -1) {
-    return sortedPlayers;
-  }
-  
-  // Empezar desde el primer speaker y seguir el orden circular
+  // Usar el mismo orden que nextSpeakerIndex: array original (orden de llegada) empezando desde firstSpeakerIndex
+  // Esto garantiza que el orden visual sea el mismo que el orden real de turnos
   const ordered: PlayerState[] = [];
-  for (let i = 0; i < sortedPlayers.length; i++) {
-    const index = (startIndexInSorted + i) % sortedPlayers.length;
-    ordered.push(sortedPlayers[index]);
+  const startIndex = state.firstSpeakerIndex;
+  
+  // Empezar desde firstSpeakerIndex y seguir el orden circular del array original
+  // Este es el orden fijo que se establece al inicio de la partida
+  for (let i = 0; i < state.players.length; i++) {
+    const index = (startIndex + i) % state.players.length;
+    if (state.players[index]) {
+      ordered.push(state.players[index]);
+    }
   }
   
   return ordered;
@@ -199,6 +192,8 @@ const App = () => {
   const [joinCodeInput, setJoinCodeInput] = useState('');
   const [clueInput, setClueInput] = useState('');
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [turnTimeRemaining, setTurnTimeRemaining] = useState<number | null>(null);
+  const [votingTimeRemaining, setVotingTimeRemaining] = useState<number | null>(null);
 
   const roomStateRef = useRef<ReturnType<typeof ref> | null>(null);
   const roomEventsRef = useRef<ReturnType<typeof ref> | null>(null);
@@ -376,6 +371,90 @@ const App = () => {
     },
     [isHost, roomCode],
   );
+
+  // Temporizador para el turno actual
+  useEffect(() => {
+    if (!gameState || gameState.phase !== 'clue' || !gameState.timeLimit) {
+      setTurnTimeRemaining(null);
+      return;
+    }
+
+    const turnPlayer = gameState.currentTurnIndex >= 0 ? gameState.players[gameState.currentTurnIndex] : null;
+    if (!turnPlayer) {
+      setTurnTimeRemaining(null);
+      return;
+    }
+
+    // Verificar si este jugador ya ha dado su pista
+    const hasGivenClue = hasGivenClueThisRound(gameState, turnPlayer.id);
+    if (hasGivenClue) {
+      setTurnTimeRemaining(null);
+      return;
+    }
+
+    // Iniciar temporizador desde el timeLimit
+    setTurnTimeRemaining(gameState.timeLimit);
+
+    const interval = setInterval(() => {
+      setTurnTimeRemaining((prev) => {
+        if (prev === null || prev <= 1) {
+          clearInterval(interval);
+          // Si es el host y el tiempo se acabó, avanzar automáticamente
+          if (isHost && prev !== null && prev <= 1) {
+            patchState((prevState) => {
+              if (prevState.phase !== 'clue') return prevState;
+              const speakerIndex = prevState.currentTurnIndex;
+              if (speakerIndex < 0) return prevState;
+              const activePlayer = prevState.players[speakerIndex];
+              if (!activePlayer || !activePlayer.alive) return prevState;
+
+              // Verificar si ya tiene pista
+              const alreadySpoke = hasGivenClueThisRound(prevState, activePlayer.id);
+              if (alreadySpoke) return prevState;
+
+              // Añadir pista especial "[SIN RESPUESTA]"
+              const clueEntry: GameClue = {
+                id: crypto.randomUUID(),
+                playerId: activePlayer.id,
+                word: '[SIN RESPUESTA]',
+                round: prevState.round,
+                createdAt: Date.now(),
+              };
+
+              const updatedPlayers = prevState.players.map((player, index) =>
+                index === speakerIndex
+                  ? {
+                      ...player,
+                      clue: '[SIN RESPUESTA]',
+                    }
+                  : player,
+              );
+
+              const stateWithNewClue = {
+                ...prevState,
+                clues: [...prevState.clues, clueEntry],
+                players: updatedPlayers,
+              };
+              
+              const upcomingIndex = nextSpeakerIndex(stateWithNewClue);
+
+              return {
+                ...stateWithNewClue,
+                currentTurnIndex: upcomingIndex,
+              };
+            });
+          }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      clearInterval(interval);
+      setTurnTimeRemaining(null);
+    };
+  }, [gameState?.phase, gameState?.currentTurnIndex, gameState?.timeLimit, gameState?.clues, gameState?.round, isHost, patchState]);
 
   const sendBroadcast = useCallback((event: string, payload: unknown) => {
     if (!database || !roomCode) return;
@@ -1075,6 +1154,36 @@ const App = () => {
     }
     patchState((prev) => finishElimination(prev, targetId, prev.players));
   }, [gameState, isHost, patchState]);
+
+  // Temporizador para la fase de votación
+  useEffect(() => {
+    if (!gameState || gameState.phase !== 'voting' || !gameState.votingTimeLimit) {
+      setVotingTimeRemaining(null);
+      return;
+    }
+
+    // Iniciar temporizador desde el votingTimeLimit
+    setVotingTimeRemaining(gameState.votingTimeLimit);
+
+    const interval = setInterval(() => {
+      setVotingTimeRemaining((prev) => {
+        if (prev === null || prev <= 1) {
+          clearInterval(interval);
+          // Si es el host y el tiempo se acabó, cerrar votación automáticamente
+          if (isHost && prev !== null && prev <= 1) {
+            handleFinalizeVoting();
+          }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      clearInterval(interval);
+      setVotingTimeRemaining(null);
+    };
+  }, [gameState?.phase, gameState?.votingTimeLimit, isHost, handleFinalizeVoting]);
 
   const handleContinueAfterReveal = useCallback(() => {
     if (!gameState || !isHost) return;
@@ -1808,30 +1917,76 @@ const App = () => {
       setClueInput('');
     };
 
+    // Función helper para calcular el color del progreso basado en el tiempo restante
+    const getProgressColor = (remaining: number, total: number): string => {
+      const percentage = remaining / total;
+      if (percentage > 0.5) {
+        // Más de la mitad: morado
+        return 'linear-gradient(90deg, rgba(139, 92, 246, 0.8) 0%, rgba(99, 102, 241, 0.8) 50%, rgba(139, 92, 246, 0.8) 100%)';
+      } else {
+        // Menos de la mitad: transición de morado a rojo
+        const redFactor = 1 - (percentage * 2); // 0 a 1 cuando percentage va de 0.5 a 0
+        const r = Math.round(139 + (239 - 139) * redFactor);
+        const g = Math.round(92 + (68 - 92) * redFactor);
+        const b = Math.round(246 + (68 - 246) * redFactor);
+        return `linear-gradient(90deg, rgba(${r}, ${g}, ${b}, 0.8) 0%, rgba(${Math.round(r * 0.7)}, ${Math.round(g * 0.7)}, ${Math.round(b * 0.7)}, 0.8) 50%, rgba(${r}, ${g}, ${b}, 0.8) 100%)`;
+      }
+    };
+
+    // Usar la misma función getPlayerOrder para garantizar consistencia
+    const playerOrder = getPlayerOrder(gameState);
+    const alivePlayers = playerOrder.filter(p => p.alive);
+    const cluesMap = new Map(cluesCurrentRound.map(clue => [clue.playerId, clue.word]));
+    
+    // Función para obtener el texto a mostrar (pista o "-" o "[SIN RESPUESTA]")
+    const getClueText = (playerId: string): string => {
+      const clue = cluesMap.get(playerId);
+      if (clue) return clue;
+      return '-';
+    };
+
+    // Calcular número de impostores
+    const impostorCount = gameState.players.filter(p => p.isImpostor).length;
+
     return (
       <div className="card">
         <header className="header">
           <div>
-            <h2></h2>
+            <h2>Ronda {gameState.round}</h2>
             <p className="subtitle">Tema: {gameState.topic}</p>
           </div>
           <button type="button" className="close-button" onClick={handleLeaveRoom} aria-label="Cerrar">
             ×
           </button>
         </header>
+        <div className="game-info-bar">
+          <div className="info-item">
+            <span className="info-label">Impostores:</span>
+            <span className="info-value">{impostorCount}</span>
+          </div>
+          <div className="info-divider"></div>
+          <div className="info-item">
+            <span className="info-label">Pista:</span>
+            <span className="info-value">{gameState.showClue ? 'Sí' : 'No'}</span>
+          </div>
+          <div className="info-divider"></div>
+          <div className="info-item">
+            <span className="info-label">Respuestas:</span>
+            <span className="info-value">{gameState.timeLimit ? `${gameState.timeLimit}s` : 'Sin límite'}</span>
+          </div>
+        </div>
         <section className="clues">
-          <h3>Pistas</h3>
           <ul>
-            {cluesCurrentRound.map((clue) => {
-              const author = gameState.players.find((player) => player.id === clue.playerId);
-              const isAuthor = author?.id === playerId;
+            {alivePlayers.map((player) => {
+              const isAuthor = player.id === playerId;
+              const clueWord = getClueText(player.id);
               return (
-                <li key={clue.id}>
+                <li key={player.id}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     {isAuthor && <span className="badge badge-you">Tú</span>}
-                    <span className="author">{author?.name}</span>
+                    <span className="author">{player.name}</span>
                   </div>
-                  <span className="word">{clue.word}</span>
+                  <span className="word">{clueWord}</span>
                 </li>
               );
             })}
@@ -1842,6 +1997,18 @@ const App = () => {
             <p>
               Turno de <strong>{turnPlayer.name}</strong>
             </p>
+            {gameState.timeLimit && turnTimeRemaining !== null && !hasGivenClueThisRound(gameState, turnPlayer.id) && (
+              <div className="turn-timer-bar">
+                <div 
+                  className="turn-timer-progress" 
+                  style={{ 
+                    width: `${(turnTimeRemaining / gameState.timeLimit) * 100}%`,
+                    transition: 'width 1s linear, background 0.5s ease',
+                    background: getProgressColor(turnTimeRemaining, gameState.timeLimit)
+                  }}
+                />
+              </div>
+            )}
             {isMyTurn ? (
               <form className="form-inline" onSubmit={handleClueSubmit}>
                 <input
@@ -1879,6 +2046,39 @@ const App = () => {
   const renderVoting = () => {
     if (!gameState || !currentPlayer) return null;
 
+    // Obtener pistas de la ronda actual ordenadas por tiempo de creación
+    const cluesOrdered = [...cluesCurrentRound].sort((a, b) => a.createdAt - b.createdAt);
+    const cluesMap = new Map(cluesOrdered.map(clue => [clue.playerId, clue]));
+    
+    // Crear lista de jugadores con sus respuestas, ordenados por tiempo de respuesta
+    const playersWithClues = cluesOrdered.map(clue => {
+      const player = alivePlayers.find(p => p.id === clue.playerId);
+      return player ? { player, clue: clue.word, createdAt: clue.createdAt } : null;
+    }).filter((item): item is { player: typeof alivePlayers[0], clue: string, createdAt: number } => item !== null);
+    
+    // Añadir jugadores que no tienen pista (no debería pasar, pero por si acaso)
+    const playersWithoutClues = alivePlayers
+      .filter(p => !cluesMap.has(p.id))
+      .map(player => ({ player, clue: '-', createdAt: Infinity }));
+    
+    // Combinar y ordenar todos los jugadores
+    const allPlayersOrdered = [...playersWithClues, ...playersWithoutClues]
+      .sort((a, b) => a.createdAt - b.createdAt);
+
+    // Función para obtener el color del progreso (similar a la de pistas)
+    const getProgressColor = (remaining: number, total: number) => {
+      const percentage = remaining / total;
+      if (percentage > 0.5) {
+        return 'linear-gradient(90deg, rgba(139, 92, 246, 0.8) 0%, rgba(139, 92, 246, 0.6) 50%, rgba(139, 92, 246, 0.8) 100%)';
+      } else {
+        const redFactor = 1 - (percentage * 2);
+        const r = Math.round(139 + (220 - 139) * redFactor);
+        const g = Math.round(92 + (38 - 92) * redFactor);
+        const b = Math.round(246 + (38 - 246) * redFactor);
+        return `linear-gradient(90deg, rgba(${r}, ${g}, ${b}, 0.8) 0%, rgba(${Math.round(r * 0.7)}, ${Math.round(g * 0.7)}, ${Math.round(b * 0.7)}, 0.8) 50%, rgba(${r}, ${g}, ${b}, 0.8) 100%)`;
+      }
+    };
+
     return (
       <div className="card">
         <header className="header">
@@ -1887,26 +2087,53 @@ const App = () => {
             ×
           </button>
         </header>
+        {gameState.votingTimeLimit && votingTimeRemaining !== null && (
+          <div className="turn-timer-bar" style={{ margin: '16px 0' }}>
+            <div 
+              className="turn-timer-progress" 
+              style={{ 
+                width: `${(votingTimeRemaining / gameState.votingTimeLimit) * 100}%`,
+                transition: 'width 1s linear, background 0.5s ease',
+                background: getProgressColor(votingTimeRemaining, gameState.votingTimeLimit)
+              }}
+            />
+          </div>
+        )}
+        <section className="clues" style={{ marginBottom: '16px' }}>
+          <ul>
+            {allPlayersOrdered.map(({ player, clue }) => {
+              const isAuthor = player.id === playerId;
+              return (
+                <li key={player.id}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {isAuthor && <span className="badge badge-you">Tú</span>}
+                    <span className="author">{player.name}</span>
+                  </div>
+                  <span className="word">{clue}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
         <section className="vote-grid">
-          {alivePlayers.map((player) => {
-            const votesAgainst = Object.values(gameState.votes).filter((voteTarget) => voteTarget === player.id).length;
-            const isSelf = player.id === playerId;
-            return (
-              <button
-                type="button"
-                key={player.id}
-                className={`vote-card${currentPlayer.vote === player.id ? ' selected' : ''}${isSelf ? ' disabled' : ''}`}
-                onClick={() => handleVote(player.id)}
-                disabled={isSelf}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
-                  {isSelf && <span className="badge badge-you">Tú</span>}
-                  <span className="name">{player.name}</span>
-                </div>
-                <span className="count">{votesAgainst} votos</span>
-              </button>
-            );
-          })}
+          {alivePlayers
+            .filter(player => player.id !== playerId) // Filtrar el jugador actual
+            .map((player) => {
+              const votesAgainst = Object.values(gameState.votes).filter((voteTarget) => voteTarget === player.id).length;
+              return (
+                <button
+                  type="button"
+                  key={player.id}
+                  className={`vote-card${currentPlayer.vote === player.id ? ' selected' : ''}`}
+                  onClick={() => handleVote(player.id)}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
+                    <span className="name">{player.name}</span>
+                  </div>
+                  <span className="count">{votesAgainst} votos</span>
+                </button>
+              );
+            })}
         </section>
         <footer className="footer">
           <button type="button" className="secondary" onClick={handleClearVote}>
