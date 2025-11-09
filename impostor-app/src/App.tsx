@@ -185,18 +185,20 @@ const App = () => {
   const [channelReady, setChannelReady] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [selectedTopicId, setSelectedTopicId] = useState<TopicId | null>(null);
-  const [showClueOption, setShowClueOption] = useState<boolean>(false);
+  const [showClueOption, setShowClueOption] = useState<boolean>(true);
   const [allowVoteChangeOption, setAllowVoteChangeOption] = useState<boolean>(true);
   const [singleWordOnlyOption, setSingleWordOnlyOption] = useState<boolean>(false);
-  const [showVoteCountOption, setShowVoteCountOption] = useState<boolean>(true);
+  const [voteDisplayModeOption, setVoteDisplayModeOption] = useState<'hidden' | 'count' | 'visible'>('visible');
   const [selectedTimeLimit, setSelectedTimeLimit] = useState<number | undefined>(undefined);
   const [selectedVotingTimeLimit, setSelectedVotingTimeLimit] = useState<number | undefined>(undefined);
   const [activeTimeTab, setActiveTimeTab] = useState<'turno' | 'votaciones' | null>(null);
   const [joinCodeInput, setJoinCodeInput] = useState('');
   const [clueInput, setClueInput] = useState('');
+  const clueInputRef = useRef<string>('');
   const [countdown, setCountdown] = useState<number | null>(null);
   const [turnTimeRemaining, setTurnTimeRemaining] = useState<number | null>(null);
   const [votingTimeRemaining, setVotingTimeRemaining] = useState<number | null>(null);
+  const processedTimeoutRef = useRef<{ playerId: string; round: number } | null>(null);
 
   const roomStateRef = useRef<ReturnType<typeof ref> | null>(null);
   const roomEventsRef = useRef<ReturnType<typeof ref> | null>(null);
@@ -215,6 +217,7 @@ const App = () => {
 
   useEffect(() => {
     setClueInput('');
+    clueInputRef.current = '';
   }, [gameState?.phase, gameState?.round, gameState?.currentTurnIndex]);
 
   const resetSession = useCallback(() => {
@@ -229,15 +232,16 @@ const App = () => {
     pendingStateRef.current = null;
     // Limpiar estados de selección del anfitrión
     setSelectedTopicId(null);
-    setShowClueOption(false);
+    setShowClueOption(true);
     setAllowVoteChangeOption(true);
     setSingleWordOnlyOption(false);
-    setShowVoteCountOption(true);
+    setVoteDisplayModeOption('visible');
     setSelectedTimeLimit(undefined);
     setSelectedVotingTimeLimit(undefined);
     setActiveTimeTab(null);
     setJoinCodeInput('');
     setClueInput('');
+    clueInputRef.current = '';
   }, []);
 
   // Función para normalizar el estado de Firebase (asegurar que todos los campos requeridos existan)
@@ -260,10 +264,10 @@ const App = () => {
       secretWord: state.secretWord || '',
       selectedPlayer: state.selectedPlayer,
       selectedPlayerClue: state.selectedPlayerClue,
-      showClue: state.showClue ?? false,
+      showClue: state.showClue ?? true,
       allowVoteChange: state.allowVoteChange ?? true,
       singleWordOnly: state.singleWordOnly ?? false,
-      showVoteCount: state.showVoteCount ?? true,
+      voteDisplayMode: state.voteDisplayMode ?? 'visible',
       timeLimit: state.timeLimit,
       votingTimeLimit: state.votingTimeLimit,
       hostId: state.hostId || '',
@@ -385,12 +389,14 @@ const App = () => {
   useEffect(() => {
     if (!gameState || gameState.phase !== 'clue' || !gameState.timeLimit) {
       setTurnTimeRemaining(null);
+      processedTimeoutRef.current = null;
       return;
     }
 
     const turnPlayer = gameState.currentTurnIndex >= 0 ? gameState.players[gameState.currentTurnIndex] : null;
     if (!turnPlayer) {
       setTurnTimeRemaining(null);
+      processedTimeoutRef.current = null;
       return;
     }
 
@@ -398,60 +404,107 @@ const App = () => {
     const hasGivenClue = hasGivenClueThisRound(gameState, turnPlayer.id);
     if (hasGivenClue) {
       setTurnTimeRemaining(null);
+      // Resetear el ref si el jugador ya dio pista (nuevo turno)
+      if (processedTimeoutRef.current?.playerId !== turnPlayer.id || processedTimeoutRef.current?.round !== gameState.round) {
+        processedTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    // Si ya procesamos el timeout para este jugador en esta ronda, no hacer nada
+    if (processedTimeoutRef.current?.playerId === turnPlayer.id && processedTimeoutRef.current?.round === gameState.round) {
       return;
     }
 
     // Iniciar temporizador desde el timeLimit
     setTurnTimeRemaining(gameState.timeLimit);
 
+    // Capturar el playerId y round actuales para usar en el callback
+    const currentPlayerId = turnPlayer.id;
+    const currentRound = gameState.round;
+
     const interval = setInterval(() => {
       setTurnTimeRemaining((prev) => {
         if (prev === null || prev <= 1) {
           clearInterval(interval);
-          // Si es el host y el tiempo se acabó, avanzar automáticamente
+          
+          // Si es el turno del jugador actual y hay algo escrito, enviarlo automáticamente
+          const currentClueInput = clueInputRef.current;
+          if (currentPlayerId === playerId && currentClueInput.trim()) {
+            // Enviar inmediatamente lo que hay escrito
+            handleSubmitClue(currentClueInput);
+            setClueInput('');
+            clueInputRef.current = '';
+          }
+          
+          // Si es el host y el tiempo se acabó, esperar un momento para que el jugador envíe su pista
           if (isHost && prev !== null && prev <= 1) {
-            patchState((prevState) => {
-              if (prevState.phase !== 'clue') return prevState;
-              const speakerIndex = prevState.currentTurnIndex;
-              if (speakerIndex < 0) return prevState;
-              const activePlayer = prevState.players[speakerIndex];
-              if (!activePlayer || !activePlayer.alive) return prevState;
+            // Verificar que no hayamos procesado ya este timeout para este jugador y ronda
+            if (processedTimeoutRef.current?.playerId === currentPlayerId && processedTimeoutRef.current?.round === currentRound) {
+              return 0;
+            }
 
-              // Verificar si ya tiene pista
-              const alreadySpoke = hasGivenClueThisRound(prevState, activePlayer.id);
-              if (alreadySpoke) return prevState;
+            // Esperar un pequeño delay para dar tiempo al jugador a enviar su pista automáticamente
+            setTimeout(() => {
+              patchState((prevState) => {
+                if (prevState.phase !== 'clue') return prevState;
+                const speakerIndex = prevState.currentTurnIndex;
+                if (speakerIndex < 0) return prevState;
+                const activePlayer = prevState.players[speakerIndex];
+                if (!activePlayer || !activePlayer.alive) return prevState;
 
-              // Añadir pista especial "[SIN RESPUESTA]"
-              const clueEntry: GameClue = {
-                id: crypto.randomUUID(),
-                playerId: activePlayer.id,
-                word: '[SIN RESPUESTA]',
-                round: prevState.round,
-                createdAt: Date.now(),
-              };
+                // Verificar que es el mismo jugador que estábamos esperando
+                if (activePlayer.id !== currentPlayerId) return prevState;
 
-              const updatedPlayers = prevState.players.map((player, index) =>
-                index === speakerIndex
-                  ? {
-                      ...player,
-                      clue: '[SIN RESPUESTA]',
-                    }
-                  : player,
-              );
+                // Verificar si ya tiene pista (el jugador pudo haber enviado algo automáticamente)
+                const alreadySpoke = hasGivenClueThisRound(prevState, activePlayer.id);
+                if (alreadySpoke) {
+                  // El jugador ya envió su pista, solo avanzar al siguiente
+                  const upcomingIndex = nextSpeakerIndex(prevState);
+                  return {
+                    ...prevState,
+                    currentTurnIndex: upcomingIndex,
+                  };
+                }
 
-              const stateWithNewClue = {
-                ...prevState,
-                clues: [...prevState.clues, clueEntry],
-                players: updatedPlayers,
-              };
-              
-              const upcomingIndex = nextSpeakerIndex(stateWithNewClue);
+                // Marcar que hemos procesado este timeout
+                processedTimeoutRef.current = {
+                  playerId: activePlayer.id,
+                  round: prevState.round,
+                };
 
-              return {
-                ...stateWithNewClue,
-                currentTurnIndex: upcomingIndex,
-              };
-            });
+                // Añadir pista especial "[SIN RESPUESTA]" solo si no se envió nada
+                const clueEntry: GameClue = {
+                  id: crypto.randomUUID(),
+                  playerId: activePlayer.id,
+                  word: '[SIN RESPUESTA]',
+                  round: prevState.round,
+                  createdAt: Date.now(),
+                };
+
+                const updatedPlayers = prevState.players.map((player, index) =>
+                  index === speakerIndex
+                    ? {
+                        ...player,
+                        clue: '[SIN RESPUESTA]',
+                      }
+                    : player,
+                );
+
+                const stateWithNewClue = {
+                  ...prevState,
+                  clues: [...prevState.clues, clueEntry],
+                  players: updatedPlayers,
+                };
+                
+                const upcomingIndex = nextSpeakerIndex(stateWithNewClue);
+
+                return {
+                  ...stateWithNewClue,
+                  currentTurnIndex: upcomingIndex,
+                };
+              });
+            }, 500); // Esperar 500ms para dar tiempo al jugador a enviar su pista
           }
           return 0;
         }
@@ -821,7 +874,7 @@ const App = () => {
     };
 
     setSelectedTopicId(null);
-    setShowClueOption(false);
+    setShowClueOption(true);
     setSelectedTimeLimit(undefined);
     setSelectedVotingTimeLimit(undefined);
     setActiveTimeTab(null);
@@ -832,10 +885,10 @@ const App = () => {
       secretWord: '',
       selectedPlayer: undefined,
       selectedPlayerClue: undefined,
-      showClue: false,
+      showClue: true,
       allowVoteChange: true,
       singleWordOnly: false,
-      showVoteCount: true,
+      voteDisplayMode: 'visible',
       hostId: playerId,
       impostorId: undefined,
       players: [hostPlayer],
@@ -1063,7 +1116,7 @@ const App = () => {
         showClue: showClueOption,
         allowVoteChange: allowVoteChangeOption,
         singleWordOnly: singleWordOnlyOption,
-        showVoteCount: showVoteCountOption,
+        voteDisplayMode: voteDisplayModeOption,
         timeLimit: selectedTimeLimit,
         votingTimeLimit: selectedVotingTimeLimit,
         players: reshuffledPlayers,
@@ -1080,16 +1133,16 @@ const App = () => {
     });
 
     setStatusMessage('');
-  }, [gameState, isHost, selectedTopicId, showClueOption, allowVoteChangeOption, singleWordOnlyOption, showVoteCountOption, selectedTimeLimit, selectedVotingTimeLimit, patchState]);
+  }, [gameState, isHost, selectedTopicId, showClueOption, allowVoteChangeOption, singleWordOnlyOption, voteDisplayModeOption, selectedTimeLimit, selectedVotingTimeLimit, patchState]);
 
   // Sincronizar opciones de personalización con gameState
   useEffect(() => {
     if (gameState && isHost) {
       setAllowVoteChangeOption(gameState.allowVoteChange ?? true);
       setSingleWordOnlyOption(gameState.singleWordOnly ?? false);
-      setShowVoteCountOption(gameState.showVoteCount ?? true);
+      setVoteDisplayModeOption(gameState.voteDisplayMode ?? 'visible');
     }
-  }, [gameState?.allowVoteChange, gameState?.singleWordOnly, gameState?.showVoteCount, isHost]);
+  }, [gameState?.allowVoteChange, gameState?.singleWordOnly, gameState?.voteDisplayMode, isHost]);
 
   const handleBeginClues = useCallback(() => {
     if (!gameState || !isHost) return;
@@ -1275,10 +1328,10 @@ const App = () => {
           secretWord: '',
           selectedPlayer: undefined,
           selectedPlayerClue: undefined,
-          showClue: false,
+          showClue: true,
           allowVoteChange: true,
           singleWordOnly: false,
-          showVoteCount: true,
+          voteDisplayMode: 'visible',
           timeLimit: undefined,
           votingTimeLimit: undefined,
           impostorId: undefined,
@@ -1702,7 +1755,7 @@ const App = () => {
         </section>
         <section className="players">
           <h3>Jugadores ({gameState.players.length}/{MAX_PLAYERS})</h3>
-          <ul className={!isCurrentHost ? 'non-interactive' : ''}>
+          <ul className="non-interactive">
             {gameState.players.map((player) => (
               <li key={player.id}>
                 <span>{player.name}</span>
@@ -1803,7 +1856,7 @@ const App = () => {
                   </span>
                 </div>
                 <div 
-                  className={`personalization-button ${singleWordOnlyOption ? 'active' : 'inactive'}`}
+                  className={`personalization-button ${!singleWordOnlyOption ? 'active' : 'inactive'}`}
                   onClick={() => {
                     const newValue = !singleWordOnlyOption;
                     setSingleWordOnlyOption(newValue);
@@ -1818,38 +1871,59 @@ const App = () => {
                 >
                   <div className="personalization-icon">
                     <img 
-                      src={singleWordOnlyOption ? "/masDeUnaPalabra.png" : "/soloUnaPalabra.png"} 
-                      alt={singleWordOnlyOption ? "Palabras" : "Una palabra"}
+                      src={!singleWordOnlyOption ? "/masDeUnaPalabra.png" : "/soloUnaPalabra.png"} 
+                      alt={!singleWordOnlyOption ? "Palabras" : "Una palabra"}
                       className="personalization-icon-img"
                     />
                   </div>
                   <span className="personalization-label">
-                    {singleWordOnlyOption ? 'Palabras' : 'Una palabra'}
+                    {!singleWordOnlyOption ? 'Palabras' : 'Una palabra'}
                   </span>
                 </div>
                 <div 
-                  className={`personalization-button ${showVoteCountOption ? 'active' : 'inactive'}`}
+                  className={`personalization-button ${voteDisplayModeOption !== 'hidden' ? 'active' : 'inactive'}`}
                   onClick={() => {
-                    const newValue = !showVoteCountOption;
-                    setShowVoteCountOption(newValue);
+                    // Ciclar entre los 3 estados: hidden -> count -> visible -> hidden
+                    const nextMode = voteDisplayModeOption === 'hidden' 
+                      ? 'count' 
+                      : voteDisplayModeOption === 'count' 
+                      ? 'visible' 
+                      : 'hidden';
+                    setVoteDisplayModeOption(nextMode);
                     // Guardar en gameState para que los no anfitriones lo vean
                     if (isHost && gameState && patchState) {
                       patchState((prev) => ({
                         ...prev,
-                        showVoteCount: newValue,
+                        voteDisplayMode: nextMode,
                       }));
                     }
                   }}
                 >
                   <div className="personalization-icon">
                     <img 
-                      src={showVoteCountOption ? "/recuentoVotos.png" : "/sinRecuentoVotos.png"} 
-                      alt={showVoteCountOption ? "Recuento de votos activado" : "Recuento de votos desactivado"}
+                      src={
+                        voteDisplayModeOption === 'hidden' 
+                          ? "/votosOcultos.png" 
+                          : voteDisplayModeOption === 'count' 
+                          ? "/recuentoVisible.png" 
+                          : "/votosVisibles.png"
+                      } 
+                      alt={
+                        voteDisplayModeOption === 'hidden' 
+                          ? "Votos ocultos" 
+                          : voteDisplayModeOption === 'count' 
+                          ? "Recuento visible" 
+                          : "Votos visibles"
+                      }
                       className="personalization-icon-img"
                     />
                   </div>
                   <span className="personalization-label">
-                    {showVoteCountOption ? 'Votos visibles' : 'Votos no visibles'}
+                    {voteDisplayModeOption === 'hidden' 
+                      ? 'Votos ocultos' 
+                      : voteDisplayModeOption === 'count' 
+                      ? 'Recuento visible' 
+                      : 'Votos visibles'}
                   </span>
                 </div>
               </div>
@@ -1926,27 +2000,25 @@ const App = () => {
         ) : (
           <section className="guest-summary">
             <h3>Configuración de la partida</h3>
-            <div className="summary-grid">
+            <div className="summary-container">
               <div className="summary-topic-card">
-                {gameState.topic ? (
+                {gameState.topic && Object.values(topics).find(t => t.name === gameState.topic) ? (
                   <>
                     <div className="summary-topic-icon">
-                      {Object.values(topics).find(t => t.name === gameState.topic) && (
-                        <img 
-                          src={`/${Object.values(topics).find(t => t.name === gameState.topic)!.id}.png`} 
-                          alt={gameState.topic}
-                          className="summary-topic-icon-img"
-                        />
-                      )}
+                      <img 
+                        src={`/${Object.values(topics).find(t => t.name === gameState.topic)!.id}.png`} 
+                        alt={gameState.topic}
+                        className="summary-topic-icon-img"
+                      />
                     </div>
                     <span className="summary-topic-name">{gameState.topic}</span>
                   </>
                 ) : (
-                  <span className="summary-topic-name">No seleccionada</span>
+                  <span className="summary-topic-name summary-topic-name-centered">Categoría no seleccionada</span>
                 )}
               </div>
-              <div className="summary-options-column">
-                <div className={`summary-option-card ${gameState.showClue ? 'active' : 'inactive'}`}>
+              <div className="summary-options-grid">
+                <div className="summary-option-card">
                   <div className="summary-option-icon">
                     <img 
                       src={gameState.showClue ? "/pista.png" : "/sinPista.png"} 
@@ -1956,7 +2028,7 @@ const App = () => {
                   </div>
                   <span className="summary-option-label">{gameState.showClue ? 'Con pista' : 'Sin pista'}</span>
                 </div>
-                <div className={`summary-option-card ${gameState.allowVoteChange ? 'active' : 'inactive'}`}>
+                <div className="summary-option-card">
                   <div className="summary-option-icon">
                     <img 
                       src={gameState.allowVoteChange ? "/cambioVoto.png" : "/sinCambioVoto.png"} 
@@ -1966,7 +2038,7 @@ const App = () => {
                   </div>
                   <span className="summary-option-label">{gameState.allowVoteChange ? 'Cambio de voto' : 'Sin cambio'}</span>
                 </div>
-                <div className={`summary-option-card ${gameState.singleWordOnly ? 'active' : 'inactive'}`}>
+                <div className="summary-option-card">
                   <div className="summary-option-icon">
                     <img 
                       src={gameState.singleWordOnly ? "/masDeUnaPalabra.png" : "/soloUnaPalabra.png"} 
@@ -1974,17 +2046,35 @@ const App = () => {
                       className="summary-option-icon-img"
                     />
                   </div>
-                  <span className="summary-option-label">{gameState.singleWordOnly ? 'Más de una palabra' : 'Solo una palabra'}</span>
+                  <span className="summary-option-label">{gameState.singleWordOnly ? 'Palabras' : 'Solo una palabra'}</span>
                 </div>
-                <div className={`summary-option-card ${gameState.showVoteCount ? 'active' : 'inactive'}`}>
+                <div className="summary-option-card">
                   <div className="summary-option-icon">
                     <img 
-                      src={gameState.showVoteCount ? "/recuentoVotos.png" : "/sinRecuentoVotos.png"} 
-                      alt={gameState.showVoteCount ? "Recuento de votos activado" : "Recuento de votos desactivado"}
+                      src={
+                        gameState.voteDisplayMode === 'hidden' 
+                          ? "/votosOcultos.png" 
+                          : gameState.voteDisplayMode === 'count' 
+                          ? "/recuentoVisible.png" 
+                          : "/votosVisibles.png"
+                      } 
+                      alt={
+                        gameState.voteDisplayMode === 'hidden' 
+                          ? "Votos ocultos" 
+                          : gameState.voteDisplayMode === 'count' 
+                          ? "Recuento visible" 
+                          : "Votos visibles"
+                      }
                       className="summary-option-icon-img"
                     />
                   </div>
-                  <span className="summary-option-label">{gameState.showVoteCount ? 'Votos visibles' : 'Votos no visibles'}</span>
+                  <span className="summary-option-label">
+                    {gameState.voteDisplayMode === 'hidden' 
+                      ? 'Votos ocultos' 
+                      : gameState.voteDisplayMode === 'count' 
+                      ? 'Recuento visible' 
+                      : 'Votos visibles'}
+                  </span>
                 </div>
                 <div className="summary-option-card time-card">
                   <div className="summary-option-icon">
@@ -2081,6 +2171,7 @@ const App = () => {
       event.preventDefault();
       handleSubmitClue(clueInput);
       setClueInput('');
+      clueInputRef.current = '';
     };
 
     // Función helper para calcular el color del progreso basado en el tiempo restante
@@ -2189,9 +2280,11 @@ const App = () => {
                         const words = value.trim().split(/\s+/);
                         if (words.length <= 1) {
                           setClueInput(value);
+                          clueInputRef.current = value;
                         }
                       } else {
                         setClueInput(value);
+                        clueInputRef.current = value;
                       }
                     }
                   }}
@@ -2315,7 +2408,8 @@ const App = () => {
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
                     <span className="name">{player.name}</span>
                   </div>
-                  {gameState.showVoteCount && <span className="count">{votesAgainst} votos</span>}
+                  {gameState.voteDisplayMode === 'visible' && <span className="count">{votesAgainst} votos</span>}
+                  {gameState.voteDisplayMode === 'count' && <span className="count">{votesAgainst}</span>}
                 </button>
               );
             })}
