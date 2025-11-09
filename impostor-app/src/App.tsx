@@ -186,6 +186,9 @@ const App = () => {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [selectedTopicId, setSelectedTopicId] = useState<TopicId | null>(null);
   const [showClueOption, setShowClueOption] = useState<boolean>(false);
+  const [allowVoteChangeOption, setAllowVoteChangeOption] = useState<boolean>(true);
+  const [singleWordOnlyOption, setSingleWordOnlyOption] = useState<boolean>(false);
+  const [showVoteCountOption, setShowVoteCountOption] = useState<boolean>(true);
   const [selectedTimeLimit, setSelectedTimeLimit] = useState<number | undefined>(undefined);
   const [selectedVotingTimeLimit, setSelectedVotingTimeLimit] = useState<number | undefined>(undefined);
   const [activeTimeTab, setActiveTimeTab] = useState<'turno' | 'votaciones' | null>(null);
@@ -227,6 +230,9 @@ const App = () => {
     // Limpiar estados de selección del anfitrión
     setSelectedTopicId(null);
     setShowClueOption(false);
+    setAllowVoteChangeOption(true);
+    setSingleWordOnlyOption(false);
+    setShowVoteCountOption(true);
     setSelectedTimeLimit(undefined);
     setSelectedVotingTimeLimit(undefined);
     setActiveTimeTab(null);
@@ -255,6 +261,9 @@ const App = () => {
       selectedPlayer: state.selectedPlayer,
       selectedPlayerClue: state.selectedPlayerClue,
       showClue: state.showClue ?? false,
+      allowVoteChange: state.allowVoteChange ?? true,
+      singleWordOnly: state.singleWordOnly ?? false,
+      showVoteCount: state.showVoteCount ?? true,
       timeLimit: state.timeLimit,
       votingTimeLimit: state.votingTimeLimit,
       hostId: state.hostId || '',
@@ -824,6 +833,9 @@ const App = () => {
       selectedPlayer: undefined,
       selectedPlayerClue: undefined,
       showClue: false,
+      allowVoteChange: true,
+      singleWordOnly: false,
+      showVoteCount: true,
       hostId: playerId,
       impostorId: undefined,
       players: [hostPlayer],
@@ -1049,6 +1061,9 @@ const App = () => {
         selectedPlayer: randomPlayer.name,
         selectedPlayerClue: randomPlayer.clue,
         showClue: showClueOption,
+        allowVoteChange: allowVoteChangeOption,
+        singleWordOnly: singleWordOnlyOption,
+        showVoteCount: showVoteCountOption,
         timeLimit: selectedTimeLimit,
         votingTimeLimit: selectedVotingTimeLimit,
         players: reshuffledPlayers,
@@ -1065,7 +1080,16 @@ const App = () => {
     });
 
     setStatusMessage('');
-  }, [gameState, isHost, selectedTopicId, showClueOption, selectedTimeLimit, selectedVotingTimeLimit, patchState]);
+  }, [gameState, isHost, selectedTopicId, showClueOption, allowVoteChangeOption, singleWordOnlyOption, showVoteCountOption, selectedTimeLimit, selectedVotingTimeLimit, patchState]);
+
+  // Sincronizar opciones de personalización con gameState
+  useEffect(() => {
+    if (gameState && isHost) {
+      setAllowVoteChangeOption(gameState.allowVoteChange ?? true);
+      setSingleWordOnlyOption(gameState.singleWordOnly ?? false);
+      setShowVoteCountOption(gameState.showVoteCount ?? true);
+    }
+  }, [gameState?.allowVoteChange, gameState?.singleWordOnly, gameState?.showVoteCount, isHost]);
 
   const handleBeginClues = useCallback(() => {
     if (!gameState || !isHost) return;
@@ -1149,7 +1173,7 @@ const App = () => {
     if (!gameState || !isHost) return;
     const { targetId, tie } = resolveVotes(gameState);
     if (tie || !targetId) {
-      setStatusMessage('La votación ha quedado empatada. Pide a los jugadores que cambien su voto.');
+      setStatusMessage('La votación ha quedado empatada. Los jugadores pueden cambiar su voto.');
       return;
     }
     patchState((prev) => finishElimination(prev, targetId, prev.players));
@@ -1169,9 +1193,40 @@ const App = () => {
       setVotingTimeRemaining((prev) => {
         if (prev === null || prev <= 1) {
           clearInterval(interval);
-          // Si es el host y el tiempo se acabó, cerrar votación automáticamente
+          // Si es el host y el tiempo se acabó, asignar votos aleatorios y cerrar votación
           if (isHost && prev !== null && prev <= 1) {
-            handleFinalizeVoting();
+            patchState((prevState) => {
+              if (prevState.phase !== 'voting') return prevState;
+              
+              const alivePlayers = getAlivePlayers(prevState);
+              const updatedVotes = { ...prevState.votes };
+              
+              // Asignar votos aleatorios a jugadores que no han votado
+              // Asegurar que cada jugador solo vote una vez
+              alivePlayers.forEach((player) => {
+                // Solo asignar voto si el jugador no ha votado aún
+                if (!updatedVotes[player.id]) {
+                  // Obtener lista de jugadores vivos excluyendo al propio jugador
+                  const possibleTargets = alivePlayers.filter(p => p.id !== player.id);
+                  if (possibleTargets.length > 0) {
+                    // Seleccionar un objetivo aleatorio
+                    const randomTarget = possibleTargets[Math.floor(Math.random() * possibleTargets.length)];
+                    updatedVotes[player.id] = randomTarget.id;
+                  }
+                }
+                // Si el jugador ya tiene voto, mantenerlo (no cambiar votos existentes)
+              });
+              
+              return {
+                ...prevState,
+                votes: updatedVotes,
+              };
+            });
+            
+            // Esperar un momento para que se actualice el estado antes de finalizar
+            setTimeout(() => {
+              handleFinalizeVoting();
+            }, 100);
           }
           return 0;
         }
@@ -1183,7 +1238,7 @@ const App = () => {
       clearInterval(interval);
       setVotingTimeRemaining(null);
     };
-  }, [gameState?.phase, gameState?.votingTimeLimit, isHost, handleFinalizeVoting]);
+  }, [gameState?.phase, gameState?.votingTimeLimit, isHost, handleFinalizeVoting, patchState]);
 
   const handleContinueAfterReveal = useCallback(() => {
     if (!gameState || !isHost) return;
@@ -1221,6 +1276,9 @@ const App = () => {
           selectedPlayer: undefined,
           selectedPlayerClue: undefined,
           showClue: false,
+          allowVoteChange: true,
+          singleWordOnly: false,
+          showVoteCount: true,
           timeLimit: undefined,
           votingTimeLimit: undefined,
           impostorId: undefined,
@@ -1691,31 +1749,109 @@ const App = () => {
                 ))}
               </div>
             </label>
-            <label className="field">
-              <div 
-                className={`checkbox-field ${showClueOption ? 'active' : 'inactive'}`}
-                onClick={() => {
-                  const newValue = !showClueOption;
-                  setShowClueOption(newValue);
-                  // Guardar en gameState para que los no anfitriones lo vean
-                  if (isHost && gameState && patchState) {
-                    patchState((prev) => ({
-                      ...prev,
-                      showClue: newValue,
-                    }));
-                  }
-                }}
-              >
-                <div className="checkbox-visual">
-                  <img 
-                    src={showClueOption ? "/pista.png" : "/cruz.png"} 
-                    alt={showClueOption ? "Activado" : "Desactivado"}
-                    className="checkbox-status-icon"
-                  />
+            <label className="field personalization-field">
+              <span>PERSONALIZACIÓN</span>
+              <div className="personalization-grid">
+                <div 
+                  className={`personalization-button ${showClueOption ? 'active' : 'inactive'}`}
+                  onClick={() => {
+                    const newValue = !showClueOption;
+                    setShowClueOption(newValue);
+                    // Guardar en gameState para que los no anfitriones lo vean
+                    if (isHost && gameState && patchState) {
+                      patchState((prev) => ({
+                        ...prev,
+                        showClue: newValue,
+                      }));
+                    }
+                  }}
+                >
+                  <div className="personalization-icon">
+                    <img 
+                      src={showClueOption ? "/pista.png" : "/sinPista.png"} 
+                      alt={showClueOption ? "Pista activada" : "Pista desactivada"}
+                      className="personalization-icon-img"
+                    />
+                  </div>
+                  <span className="personalization-label">
+                    {showClueOption ? 'Pista' : 'Sin pista'}
+                  </span>
                 </div>
-                <span className="checkbox-label">
-                  Mostrar pista al impostor
-                </span>
+                <div 
+                  className={`personalization-button ${allowVoteChangeOption ? 'active' : 'inactive'}`}
+                  onClick={() => {
+                    const newValue = !allowVoteChangeOption;
+                    setAllowVoteChangeOption(newValue);
+                    // Guardar en gameState para que los no anfitriones lo vean
+                    if (isHost && gameState && patchState) {
+                      patchState((prev) => ({
+                        ...prev,
+                        allowVoteChange: newValue,
+                      }));
+                    }
+                  }}
+                >
+                  <div className="personalization-icon">
+                    <img 
+                      src={allowVoteChangeOption ? "/cambioVoto.png" : "/sinCambioVoto.png"} 
+                      alt={allowVoteChangeOption ? "Cambio de voto activado" : "Cambio de voto desactivado"}
+                      className="personalization-icon-img"
+                    />
+                  </div>
+                  <span className="personalization-label">
+                    {allowVoteChangeOption ? 'Cambio de voto' : 'Sin cambio'}
+                  </span>
+                </div>
+                <div 
+                  className={`personalization-button ${singleWordOnlyOption ? 'active' : 'inactive'}`}
+                  onClick={() => {
+                    const newValue = !singleWordOnlyOption;
+                    setSingleWordOnlyOption(newValue);
+                    // Guardar en gameState para que los no anfitriones lo vean
+                    if (isHost && gameState && patchState) {
+                      patchState((prev) => ({
+                        ...prev,
+                        singleWordOnly: newValue,
+                      }));
+                    }
+                  }}
+                >
+                  <div className="personalization-icon">
+                    <img 
+                      src={singleWordOnlyOption ? "/masDeUnaPalabra.png" : "/soloUnaPalabra.png"} 
+                      alt={singleWordOnlyOption ? "Palabras" : "Una palabra"}
+                      className="personalization-icon-img"
+                    />
+                  </div>
+                  <span className="personalization-label">
+                    {singleWordOnlyOption ? 'Palabras' : 'Una palabra'}
+                  </span>
+                </div>
+                <div 
+                  className={`personalization-button ${showVoteCountOption ? 'active' : 'inactive'}`}
+                  onClick={() => {
+                    const newValue = !showVoteCountOption;
+                    setShowVoteCountOption(newValue);
+                    // Guardar en gameState para que los no anfitriones lo vean
+                    if (isHost && gameState && patchState) {
+                      patchState((prev) => ({
+                        ...prev,
+                        showVoteCount: newValue,
+                      }));
+                    }
+                  }}
+                >
+                  <div className="personalization-icon">
+                    <img 
+                      src={showVoteCountOption ? "/recuentoVotos.png" : "/sinRecuentoVotos.png"} 
+                      alt={showVoteCountOption ? "Recuento de votos activado" : "Recuento de votos desactivado"}
+                      className="personalization-icon-img"
+                    />
+                  </div>
+                  <span className="personalization-label">
+                    {showVoteCountOption ? 'Votos visibles' : 'Votos no visibles'}
+                  </span>
+                </div>
               </div>
             </label>
             <label className="field">
@@ -1813,12 +1949,42 @@ const App = () => {
                 <div className={`summary-option-card ${gameState.showClue ? 'active' : 'inactive'}`}>
                   <div className="summary-option-icon">
                     <img 
-                      src={gameState.showClue ? "/pista.png" : "/cruz.png"} 
-                      alt={gameState.showClue ? "Activado" : "Desactivado"}
+                      src={gameState.showClue ? "/pista.png" : "/sinPista.png"} 
+                      alt={gameState.showClue ? "Pista activada" : "Pista desactivada"}
                       className="summary-option-icon-img"
                     />
                   </div>
                   <span className="summary-option-label">{gameState.showClue ? 'Con pista' : 'Sin pista'}</span>
+                </div>
+                <div className={`summary-option-card ${gameState.allowVoteChange ? 'active' : 'inactive'}`}>
+                  <div className="summary-option-icon">
+                    <img 
+                      src={gameState.allowVoteChange ? "/cambioVoto.png" : "/sinCambioVoto.png"} 
+                      alt={gameState.allowVoteChange ? "Cambio de voto activado" : "Cambio de voto desactivado"}
+                      className="summary-option-icon-img"
+                    />
+                  </div>
+                  <span className="summary-option-label">{gameState.allowVoteChange ? 'Cambio de voto' : 'Sin cambio'}</span>
+                </div>
+                <div className={`summary-option-card ${gameState.singleWordOnly ? 'active' : 'inactive'}`}>
+                  <div className="summary-option-icon">
+                    <img 
+                      src={gameState.singleWordOnly ? "/masDeUnaPalabra.png" : "/soloUnaPalabra.png"} 
+                      alt={gameState.singleWordOnly ? "Más de una palabra" : "Solo una palabra"}
+                      className="summary-option-icon-img"
+                    />
+                  </div>
+                  <span className="summary-option-label">{gameState.singleWordOnly ? 'Más de una palabra' : 'Solo una palabra'}</span>
+                </div>
+                <div className={`summary-option-card ${gameState.showVoteCount ? 'active' : 'inactive'}`}>
+                  <div className="summary-option-icon">
+                    <img 
+                      src={gameState.showVoteCount ? "/recuentoVotos.png" : "/sinRecuentoVotos.png"} 
+                      alt={gameState.showVoteCount ? "Recuento de votos activado" : "Recuento de votos desactivado"}
+                      className="summary-option-icon-img"
+                    />
+                  </div>
+                  <span className="summary-option-label">{gameState.showVoteCount ? 'Votos visibles' : 'Votos no visibles'}</span>
                 </div>
                 <div className="summary-option-card time-card">
                   <div className="summary-option-icon">
@@ -1983,8 +2149,8 @@ const App = () => {
               return (
                 <li key={player.id}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    {isAuthor && <span className="badge badge-you">Tú</span>}
                     <span className="author">{player.name}</span>
+                    {isAuthor && <span className="badge badge-you">Tú</span>}
                   </div>
                   <span className="word">{clueWord}</span>
                 </li>
@@ -2011,16 +2177,35 @@ const App = () => {
             )}
             {isMyTurn ? (
               <form className="form-inline" onSubmit={handleClueSubmit}>
-                <input
-                  autoFocus
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: 0 }}>
+                  <input
+                    autoFocus
                   value={clueInput}
-                  onChange={(event) => setClueInput(event.target.value)}
-                  placeholder="Tu pista"
-                  autoComplete="off"
-                  data-form-type="other"
-                  data-lpignore="true"
-                  data-1p-ignore="true"
-                />
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    if (value.length <= 30) {
+                      // Si singleWordOnly está activado, solo permitir una palabra
+                      if (gameState?.singleWordOnly) {
+                        const words = value.trim().split(/\s+/);
+                        if (words.length <= 1) {
+                          setClueInput(value);
+                        }
+                      } else {
+                        setClueInput(value);
+                      }
+                    }
+                  }}
+                    placeholder="Tu pista"
+                    autoComplete="off"
+                    data-form-type="other"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    maxLength={30}
+                  />
+                  <span style={{ fontSize: '0.75rem', color: '#9ca3af', textAlign: 'right' }}>
+                    {clueInput.length}/30
+                  </span>
+                </div>
                 <button type="submit" className="primary" disabled={!clueInput.trim()}>
                   Enviar
                 </button>
@@ -2130,13 +2315,18 @@ const App = () => {
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
                     <span className="name">{player.name}</span>
                   </div>
-                  <span className="count">{votesAgainst} votos</span>
+                  {gameState.showVoteCount && <span className="count">{votesAgainst} votos</span>}
                 </button>
               );
             })}
         </section>
         <footer className="footer">
-          <button type="button" className="secondary" onClick={handleClearVote}>
+          <button 
+            type="button" 
+            className="secondary" 
+            onClick={handleClearVote}
+            disabled={!gameState.allowVoteChange}
+          >
             Borrar mi voto
           </button>
           {isHost && (

@@ -32,6 +32,9 @@ export interface GameState {
   selectedPlayer?: string; // Nombre del jugador seleccionado
   selectedPlayerClue?: string; // Pista del jugador seleccionado
   showClue: boolean; // Si se debe mostrar la pista
+  allowVoteChange: boolean; // Si se permite cambiar el voto después de votar (por defecto true)
+  singleWordOnly: boolean; // Si solo se permite una palabra en las pistas (por defecto false)
+  showVoteCount: boolean; // Si se muestran los votos en tiempo real durante la votación (por defecto true)
   timeLimit?: number; // Tiempo límite por turno en segundos (undefined = sin límite)
   votingTimeLimit?: number; // Tiempo límite para votaciones en segundos (undefined = sin límite)
   hostId: string;

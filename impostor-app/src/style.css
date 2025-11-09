@@ -1100,39 +1100,50 @@ button:disabled {
 
 .clues li {
   display: flex;
-  justify-content: space-between;
+  flex-direction: row;
   align-items: center;
+  justify-content: space-between;
   padding: 12px 14px;
   border-radius: 14px;
   background: rgba(139, 92, 246, 0.1);
   border: 1px solid rgba(139, 92, 246, 0.2);
-  transition: all 0.2s ease;
+  transition: none;
   flex-shrink: 0;
   gap: 12px;
+  pointer-events: none;
+  user-select: none;
 }
 
 .clues li > div {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1;
-  min-width: 0;
+  flex-shrink: 0;
 }
 
 .clues li:hover {
-  background: rgba(139, 92, 246, 0.15);
-  transform: translateX(4px);
+  background: rgba(139, 92, 246, 0.1);
+  transform: none;
 }
 
 .clues .author {
   font-weight: 600;
   color: #e0e7ff;
+  flex-shrink: 0;
 }
 
 .clues .word {
   color: #c4b5fd;
   font-weight: 700;
   font-size: 1.1rem;
+  word-wrap: break-word;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  line-height: 1.4;
+  text-align: right;
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .turn {
@@ -1633,6 +1644,95 @@ button:disabled {
   font-size: 0.95rem;
   color: #e0e7ff;
   font-weight: 500;
+}
+
+.personalization-field {
+  margin-top: 32px !important;
+}
+
+.personalization-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-top: 8px;
+  margin-bottom: 32px;
+}
+
+.personalization-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 12px 4px;
+  background: rgba(139, 92, 246, 0.1);
+  border-radius: 12px;
+  border: 2px solid rgba(139, 92, 246, 0.3);
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  min-height: 80px;
+}
+
+.personalization-button.active {
+  background: rgba(139, 92, 246, 0.2);
+  border-color: rgba(139, 92, 246, 0.5);
+  box-shadow: 0 0 6px rgba(139, 92, 246, 0.2);
+}
+
+.personalization-button.inactive {
+  background: rgba(139, 92, 246, 0.1);
+  border-color: rgba(139, 92, 246, 0.3);
+}
+
+.personalization-button:hover {
+  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.2);
+  border-color: rgba(139, 92, 246, 0.4);
+}
+
+.personalization-button.active:hover {
+  background: rgba(139, 92, 246, 0.25);
+  border-color: rgba(139, 92, 246, 0.6);
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.25);
+}
+
+.personalization-button.inactive:hover {
+  background: rgba(139, 92, 246, 0.15);
+  border-color: rgba(139, 92, 246, 0.4);
+}
+
+.personalization-icon {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 8px;
+}
+
+.personalization-icon-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.personalization-label {
+  cursor: pointer;
+  user-select: none;
+  margin: 0;
+  font-size: 0.55rem;
+  color: #e0e7ff;
+  font-weight: 500;
+  text-align: center;
+  line-height: 1.2;
+  width: 100%;
+  letter-spacing: -0.02em;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .clue-hint {
