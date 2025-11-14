@@ -46,6 +46,7 @@ export interface GameState {
   round: number;
   clues: GameClue[];
   votes: Record<string, string>;
+  confirmedVotes?: string[]; // IDs de jugadores que han confirmado su voto
   elimination?: {
     targetId: string;
     wasImpostor: boolean;
@@ -91,6 +92,7 @@ export type BroadcastEventPayload =
   | { type: 'SUBMIT_VOTE'; payload: VotePayload }
   | { type: 'READY_FOR_ROUND'; payload: ReadyPayload }
   | { type: 'CLEAR_VOTE'; playerId: string }
+  | { type: 'CONFIRM_VOTE'; playerId: string }
   | { type: 'JOIN_RESPONSE'; payload: JoinResponsePayload }
   | { type: 'PLAYER_LEAVE'; payload: LeavePayload };
 

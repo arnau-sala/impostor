@@ -198,7 +198,10 @@ const App = () => {
   const [countdown, setCountdown] = useState<number | null>(null);
   const [turnTimeRemaining, setTurnTimeRemaining] = useState<number | null>(null);
   const [votingTimeRemaining, setVotingTimeRemaining] = useState<number | null>(null);
+  const [revealCountdown, setRevealCountdown] = useState<number | null>(null);
+  const [isHoldingSecretWord, setIsHoldingSecretWord] = useState<boolean>(false);
   const processedTimeoutRef = useRef<{ playerId: string; round: number } | null>(null);
+  const votingTimerStartedRef = useRef<{ phase: string; round: number } | null>(null);
 
   const roomStateRef = useRef<ReturnType<typeof ref> | null>(null);
   const roomEventsRef = useRef<ReturnType<typeof ref> | null>(null);
@@ -268,6 +271,7 @@ const App = () => {
       allowVoteChange: state.allowVoteChange ?? true,
       singleWordOnly: state.singleWordOnly ?? false,
       voteDisplayMode: state.voteDisplayMode ?? 'visible',
+      confirmedVotes: state.confirmedVotes ?? [],
       timeLimit: state.timeLimit,
       votingTimeLimit: state.votingTimeLimit,
       hostId: state.hostId || '',
@@ -647,8 +651,8 @@ const App = () => {
           }
         }
         
-        // Ignorar nuestros propios eventos EXCEPTO READY_FOR_ROUND, SUBMIT_CLUE y SUBMIT_VOTE (el host necesita procesar estos)
-        if (eventData.playerId === playerId && eventData.type !== 'JOIN_REQUEST' && eventData.type !== 'READY_FOR_ROUND' && eventData.type !== 'SUBMIT_CLUE' && eventData.type !== 'SUBMIT_VOTE') {
+        // Ignorar nuestros propios eventos EXCEPTO READY_FOR_ROUND, SUBMIT_CLUE, SUBMIT_VOTE y CONFIRM_VOTE (el host necesita procesar estos)
+        if (eventData.playerId === playerId && eventData.type !== 'JOIN_REQUEST' && eventData.type !== 'READY_FOR_ROUND' && eventData.type !== 'SUBMIT_CLUE' && eventData.type !== 'SUBMIT_VOTE' && eventData.type !== 'CONFIRM_VOTE') {
           return;
         }
 
@@ -731,7 +735,17 @@ const App = () => {
               );
 
               const aliveCount = getAlivePlayers(prev).length;
-              const everyoneVoted = Object.keys(updatedVotes).length >= aliveCount;
+              
+              // Verificar si todos han votado (y confirmado si allowVoteChange está activado)
+              let everyoneVoted = false;
+              if (prev.allowVoteChange) {
+                // Si se permite cambiar voto, todos deben haber confirmado
+                everyoneVoted = Object.keys(updatedVotes).length >= aliveCount && 
+                               (prev.confirmedVotes?.length ?? 0) >= aliveCount;
+              } else {
+                // Si no se permite cambiar voto, todos deben haber votado
+                everyoneVoted = Object.keys(updatedVotes).length >= aliveCount;
+              }
 
               if (!everyoneVoted) {
                 return {
@@ -743,11 +757,19 @@ const App = () => {
 
               const { targetId: eliminatedId, tie } = resolveVotes({ ...prev, votes: updatedVotes });
 
+              // En caso de empate, no eliminar a nadie
               if (tie || !eliminatedId) {
+                // Pasar a fase reveal sin eliminación, limpiar votos
                 return {
                   ...prev,
-                  votes: updatedVotes,
-                  players: updatedPlayers,
+                  votes: {},
+                  confirmedVotes: [],
+                  players: updatedPlayers.map((player) => {
+                    const { vote, ...rest } = player;
+                    return rest;
+                  }),
+                  phase: 'reveal',
+                  elimination: undefined,
                 };
               }
 
@@ -762,6 +784,10 @@ const App = () => {
             patchState((prev) => {
               if (prev.phase !== 'voting') return prev;
               if (!prev.votes[voterId]) return prev;
+              
+              // Si el voto está confirmado, no permitir limpiarlo
+              if (prev.confirmedVotes?.includes(voterId)) return prev;
+              
               const updatedVotes = { ...prev.votes };
               delete updatedVotes[voterId];
               const updatedPlayers = prev.players.map((player) => {
@@ -775,6 +801,57 @@ const App = () => {
                 ...prev,
                 votes: updatedVotes,
                 players: updatedPlayers,
+              };
+            });
+            break;
+          }
+
+          case 'CONFIRM_VOTE': {
+            if (!isHost) return;
+            const { playerId: voterId } = eventData.payload as { playerId: string };
+            patchState((prev) => {
+              if (prev.phase !== 'voting') return prev;
+              // Solo se puede confirmar si hay un voto
+              if (!prev.votes[voterId]) return prev;
+              // Si ya está confirmado, no hacer nada
+              if (prev.confirmedVotes?.includes(voterId)) return prev;
+              
+              const updatedConfirmedVotes = [...(prev.confirmedVotes || []), voterId];
+              const aliveCount = getAlivePlayers(prev).length;
+              
+              // Verificar si todos han confirmado (solo si allowVoteChange está activado)
+              const everyoneConfirmed = prev.allowVoteChange && 
+                                       Object.keys(prev.votes).length >= aliveCount && 
+                                       updatedConfirmedVotes.length >= aliveCount;
+              
+              if (everyoneConfirmed) {
+                const { targetId: eliminatedId, tie } = resolveVotes(prev);
+                
+                // En caso de empate, no eliminar a nadie
+                if (tie || !eliminatedId) {
+                  return {
+                    ...prev,
+                    confirmedVotes: [],
+                    votes: {},
+                    players: prev.players.map((player) => {
+                      const { vote, ...rest } = player;
+                      return rest;
+                    }),
+                    phase: 'reveal',
+                    elimination: undefined,
+                  };
+                }
+                
+                return finishElimination(
+                  { ...prev, confirmedVotes: updatedConfirmedVotes },
+                  eliminatedId,
+                  prev.players
+                );
+              }
+              
+              return {
+                ...prev,
+                confirmedVotes: updatedConfirmedVotes,
               };
             });
             break;
@@ -898,6 +975,7 @@ const App = () => {
       round: 0,
       clues: [],
       votes: {},
+      confirmedVotes: [],
       elimination: undefined,
       winner: undefined,
       updatedAt: Date.now(),
@@ -1081,24 +1159,49 @@ const App = () => {
     }
 
     patchState((prev) => {
+      // Verificar que hay jugadores antes de empezar
+      if (prev.players.length === 0) {
+        return prev;
+      }
+
       // Mantener el orden de llegada (no reordenar los jugadores)
+      // Asegurar que TODOS los jugadores empiezan como NO impostores
       const reshuffledPlayers = prev.players.map((player) => {
         const { clue, vote, ...rest } = player;
         return {
           ...rest,
           alive: true,
-          isImpostor: false,
+          isImpostor: false, // Asegurar que todos empiezan como no impostores
           readyForRound: false,
         };
       });
       
-      // Seleccionar impostor aleatoriamente
+      // Seleccionar EXACTAMENTE UN impostor aleatoriamente
       const impostorIndex = Math.floor(Math.random() * reshuffledPlayers.length);
       const impostorId = reshuffledPlayers[impostorIndex].id;
+      
+      // Asignar el rol de impostor SOLO al jugador seleccionado
       reshuffledPlayers[impostorIndex] = {
         ...reshuffledPlayers[impostorIndex],
         isImpostor: true,
       };
+
+      // VERIFICACIÓN CRÍTICA: Asegurar que exactamente 1 jugador es impostor
+      const impostorCount = reshuffledPlayers.filter(p => p.isImpostor).length;
+      if (impostorCount !== 1) {
+        // Si hay un error, corregirlo: asegurar que solo el seleccionado es impostor
+        reshuffledPlayers.forEach((player, index) => {
+          if (index !== impostorIndex) {
+            player.isImpostor = false;
+          }
+        });
+        // Verificar nuevamente
+        const finalImpostorCount = reshuffledPlayers.filter(p => p.isImpostor).length;
+        if (finalImpostorCount !== 1) {
+          console.error('Error crítico: No se pudo asignar exactamente 1 impostor');
+          return prev; // No cambiar el estado si hay un error
+        }
+      }
 
       // Seleccionar el primer jugador que habla aleatoriamente de entre los jugadores vivos
       const aliveIndices = reshuffledPlayers
@@ -1202,6 +1305,7 @@ const App = () => {
       ...prev,
       phase: 'voting',
       votes: {},
+      confirmedVotes: [],
       players: prev.players.map((player) => {
         const { vote, ...rest } = player;
         return rest;
@@ -1223,29 +1327,60 @@ const App = () => {
   }, [isHost, patchState]);
 
   const handleFinalizeVoting = useCallback(() => {
-    if (!gameState || !isHost) return;
-    const { targetId, tie } = resolveVotes(gameState);
-    if (tie || !targetId) {
-      setStatusMessage('La votación ha quedado empatada. Los jugadores pueden cambiar su voto.');
-      return;
-    }
-    patchState((prev) => finishElimination(prev, targetId, prev.players));
-  }, [gameState, isHost, patchState]);
+    if (!isHost) return;
+    patchState((prev) => {
+      if (prev.phase !== 'voting') return prev;
+      
+      const { targetId, tie } = resolveVotes(prev);
+      
+      // En caso de empate, no eliminar a nadie
+      if (tie || !targetId) {
+        return {
+          ...prev,
+          votes: {},
+          confirmedVotes: [],
+          players: prev.players.map((player) => {
+            const { vote, ...rest } = player;
+            return rest;
+          }),
+          phase: 'reveal',
+          elimination: undefined,
+        };
+      }
+      
+      return finishElimination(prev, targetId, prev.players);
+    });
+  }, [isHost, patchState]);
 
   // Temporizador para la fase de votación
   useEffect(() => {
     if (!gameState || gameState.phase !== 'voting' || !gameState.votingTimeLimit) {
       setVotingTimeRemaining(null);
+      votingTimerStartedRef.current = null;
       return;
     }
 
-    // Iniciar temporizador desde el votingTimeLimit
+    // Verificar si el timer ya se inició para esta fase y ronda
+    if (votingTimerStartedRef.current?.phase === gameState.phase && 
+        votingTimerStartedRef.current?.round === gameState.round) {
+      // El timer ya está corriendo para esta fase/ronda, no reiniciarlo
+      return;
+    }
+
+    // Marcar que el timer se ha iniciado para esta fase/ronda
+    votingTimerStartedRef.current = {
+      phase: gameState.phase,
+      round: gameState.round,
+    };
+
+    // Iniciar temporizador desde el votingTimeLimit solo la primera vez
     setVotingTimeRemaining(gameState.votingTimeLimit);
 
     const interval = setInterval(() => {
       setVotingTimeRemaining((prev) => {
         if (prev === null || prev <= 1) {
           clearInterval(interval);
+          votingTimerStartedRef.current = null;
           // Si es el host y el tiempo se acabó, asignar votos aleatorios y cerrar votación
           if (isHost && prev !== null && prev <= 1) {
             patchState((prevState) => {
@@ -1253,6 +1388,7 @@ const App = () => {
               
               const alivePlayers = getAlivePlayers(prevState);
               const updatedVotes = { ...prevState.votes };
+              let updatedConfirmedVotes = [...(prevState.confirmedVotes || [])];
               
               // Asignar votos aleatorios a jugadores que no han votado
               // Asegurar que cada jugador solo vote una vez
@@ -1267,19 +1403,37 @@ const App = () => {
                     updatedVotes[player.id] = randomTarget.id;
                   }
                 }
-                // Si el jugador ya tiene voto, mantenerlo (no cambiar votos existentes)
+                // Si allowVoteChange está activado y el jugador tiene voto pero no confirmado, confirmarlo automáticamente
+                if (prevState.allowVoteChange && updatedVotes[player.id] && !updatedConfirmedVotes.includes(player.id)) {
+                  updatedConfirmedVotes.push(player.id);
+                }
               });
               
-              return {
-                ...prevState,
-                votes: updatedVotes,
-              };
+              // Resolver votos con el estado actualizado
+              const { targetId, tie } = resolveVotes({ ...prevState, votes: updatedVotes });
+              
+              // En caso de empate, no eliminar a nadie
+              if (tie || !targetId) {
+                return {
+                  ...prevState,
+                  votes: {},
+                  confirmedVotes: [],
+                  players: prevState.players.map((player) => {
+                    const { vote, ...rest } = player;
+                    return rest;
+                  }),
+                  phase: 'reveal',
+                  elimination: undefined,
+                };
+              }
+              
+              // Si hay un ganador, eliminar
+              return finishElimination(
+                { ...prevState, votes: updatedVotes, confirmedVotes: updatedConfirmedVotes },
+                targetId,
+                prevState.players
+              );
             });
-            
-            // Esperar un momento para que se actualice el estado antes de finalizar
-            setTimeout(() => {
-              handleFinalizeVoting();
-            }, 100);
           }
           return 0;
         }
@@ -1289,15 +1443,74 @@ const App = () => {
 
     return () => {
       clearInterval(interval);
-      setVotingTimeRemaining(null);
+      // No resetear votingTimeRemaining aquí para mantener el valor
     };
-  }, [gameState?.phase, gameState?.votingTimeLimit, isHost, handleFinalizeVoting, patchState]);
+  }, [gameState?.phase, gameState?.round, gameState?.votingTimeLimit, isHost, handleFinalizeVoting, patchState]);
+
+  // Contador de 5 segundos cuando todos han dado su pista
+  useEffect(() => {
+    if (!gameState || gameState.phase !== 'clue') {
+      setRevealCountdown(null);
+      return;
+    }
+
+    // Verificar si todos los jugadores vivos han dado su pista
+    const alivePlayers = getAlivePlayers(gameState);
+    const cluesForCurrentRound = cluesForRound(gameState.clues, gameState.round);
+    const allCluesGiven = alivePlayers.length > 0 && 
+      alivePlayers.every((player) => cluesForCurrentRound.some((clue) => clue.playerId === player.id));
+
+    if (!allCluesGiven) {
+      setRevealCountdown(null);
+      return;
+    }
+
+    // Iniciar contador de 5 segundos
+    setRevealCountdown(5);
+
+    const interval = setInterval(() => {
+      setRevealCountdown((prev) => {
+        if (prev === null || prev <= 1) {
+          clearInterval(interval);
+          // Si es el host, avanzar automáticamente a la fase de votación
+          if (isHost && prev !== null && prev <= 1) {
+            handleOpenVoting();
+          }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      clearInterval(interval);
+      setRevealCountdown(null);
+    };
+  }, [gameState?.phase, gameState?.clues, gameState?.round, gameState?.players, isHost, handleOpenVoting]);
 
   const handleContinueAfterReveal = useCallback(() => {
     if (!gameState || !isHost) return;
-    if (!gameState.elimination || gameState.phase !== 'reveal') return;
+    if (gameState.phase !== 'reveal') return;
 
     patchState((prev) => {
+      // Si el juego terminó (impostor ganó o civiles ganaron), volver al lobby
+      if (prev.winner) {
+        return {
+          ...prev,
+          phase: 'lobby' as GamePhase,
+          votes: {},
+          confirmedVotes: [],
+          elimination: undefined,
+          players: prev.players.map((player) => {
+            const { clue, vote, ...rest } = player;
+            return {
+              ...rest,
+              readyForRound: false,
+            };
+          }),
+        };
+      }
+
       const remainingPlayers = prev.players.map((player) => {
         const { clue, vote, ...rest } = player;
         return {
@@ -1312,36 +1525,12 @@ const App = () => {
         round: prev.round + 1,
         players: remainingPlayers,
         votes: {},
+        confirmedVotes: [],
         elimination: undefined,
       };
       
       // Calcular el siguiente turno usando el firstSpeakerIndex guardado
       const nextIndex = nextSpeakerIndex({ ...nextState, currentTurnIndex: -1 });
-      
-      // Si el juego terminó (impostor ganó o civiles ganaron), volver al lobby
-      if (prev.winner) {
-        return {
-          ...nextState,
-          phase: 'lobby' as GamePhase,
-          currentTurnIndex: -1,
-          topic: '',
-          secretWord: '',
-          selectedPlayer: undefined,
-          selectedPlayerClue: undefined,
-          showClue: true,
-          allowVoteChange: true,
-          singleWordOnly: false,
-          voteDisplayMode: 'visible',
-          timeLimit: undefined,
-          votingTimeLimit: undefined,
-          impostorId: undefined,
-          round: 0,
-          firstSpeakerIndex: undefined,
-          clues: [],
-          elimination: undefined,
-          winner: prev.winner, // Mantener el winner para mostrar en el lobby si es necesario
-        };
-      }
       
       return {
         ...nextState,
@@ -1387,14 +1576,42 @@ const App = () => {
         setStatusMessage('No puedes votar a ti mismo.');
         return;
       }
+      
+      // Si el voto está confirmado, no permitir cambios
+      const isVoteConfirmed = gameState?.confirmedVotes?.includes(playerId);
+      if (isVoteConfirmed) {
+        return; // No hacer nada, el voto está confirmado y bloqueado
+      }
+      
+      // Si no se permite cambiar voto y ya hay un voto, bloquear cualquier cambio
+      if (!gameState?.allowVoteChange && gameState?.votes[playerId]) {
+        return; // No hacer nada, el voto está bloqueado
+      }
+      
+      // Si ya está votado por esta persona, quitar el voto (solo si se permite cambiar)
+      if (gameState?.allowVoteChange && gameState?.votes[playerId] === targetId) {
+        sendBroadcast('CLEAR_VOTE', { playerId });
+        return;
+      }
+      
       sendBroadcast('SUBMIT_VOTE', { voterId: playerId, targetId } satisfies VotePayload);
     },
-    [playerId, sendBroadcast],
+    [playerId, sendBroadcast, gameState?.votes, gameState?.allowVoteChange, gameState?.confirmedVotes],
   );
 
-  const handleClearVote = useCallback(() => {
-    sendBroadcast('CLEAR_VOTE', { playerId });
-  }, [playerId, sendBroadcast]);
+  const handleConfirmVote = useCallback(() => {
+    // Solo se puede confirmar si hay un voto y no está ya confirmado
+    if (!gameState?.votes[playerId]) {
+      setStatusMessage('Debes votar antes de confirmar.');
+      return;
+    }
+    
+    if (gameState?.confirmedVotes?.includes(playerId)) {
+      return; // Ya está confirmado
+    }
+    
+    sendBroadcast('CONFIRM_VOTE', { playerId });
+  }, [playerId, sendBroadcast, gameState?.votes, gameState?.confirmedVotes]);
 
   // Manejar clic en pestaña de tiempo (comportamiento tipo switch)
   const handleTimeTabClick = (tab: 'turno' | 'votaciones') => {
@@ -1847,12 +2064,12 @@ const App = () => {
                   <div className="personalization-icon">
                     <img 
                       src={allowVoteChangeOption ? "/cambioVoto.png" : "/sinCambioVoto.png"} 
-                      alt={allowVoteChangeOption ? "Cambio de voto activado" : "Cambio de voto desactivado"}
+                      alt={allowVoteChangeOption ? "Cambiar voto activado" : "Cambiar voto desactivado"}
                       className="personalization-icon-img"
                     />
                   </div>
                   <span className="personalization-label">
-                    {allowVoteChangeOption ? 'Cambio de voto' : 'Sin cambio'}
+                    {allowVoteChangeOption ? 'Cambiar voto' : 'Sin cambio'}
                   </span>
                 </div>
                 <div 
@@ -1912,7 +2129,7 @@ const App = () => {
                         voteDisplayModeOption === 'hidden' 
                           ? "Votos ocultos" 
                           : voteDisplayModeOption === 'count' 
-                          ? "Recuento visible" 
+                          ? "Recuento" 
                           : "Votos visibles"
                       }
                       className="personalization-icon-img"
@@ -1922,7 +2139,7 @@ const App = () => {
                     {voteDisplayModeOption === 'hidden' 
                       ? 'Votos ocultos' 
                       : voteDisplayModeOption === 'count' 
-                      ? 'Recuento visible' 
+                      ? 'Recuento' 
                       : 'Votos visibles'}
                   </span>
                 </div>
@@ -2032,21 +2249,21 @@ const App = () => {
                   <div className="summary-option-icon">
                     <img 
                       src={gameState.allowVoteChange ? "/cambioVoto.png" : "/sinCambioVoto.png"} 
-                      alt={gameState.allowVoteChange ? "Cambio de voto activado" : "Cambio de voto desactivado"}
+                      alt={gameState.allowVoteChange ? "Cambiar voto activado" : "Cambiar voto desactivado"}
                       className="summary-option-icon-img"
                     />
                   </div>
-                  <span className="summary-option-label">{gameState.allowVoteChange ? 'Cambio de voto' : 'Sin cambio'}</span>
+                  <span className="summary-option-label">{gameState.allowVoteChange ? 'Cambiar voto' : 'Sin cambio'}</span>
                 </div>
                 <div className="summary-option-card">
                   <div className="summary-option-icon">
                     <img 
-                      src={gameState.singleWordOnly ? "/masDeUnaPalabra.png" : "/soloUnaPalabra.png"} 
-                      alt={gameState.singleWordOnly ? "Más de una palabra" : "Solo una palabra"}
+                      src={gameState.singleWordOnly ? "/soloUnaPalabra.png" : "/masDeUnaPalabra.png"} 
+                      alt={gameState.singleWordOnly ? "Una palabra" : "Palabras"}
                       className="summary-option-icon-img"
                     />
                   </div>
-                  <span className="summary-option-label">{gameState.singleWordOnly ? 'Palabras' : 'Solo una palabra'}</span>
+                  <span className="summary-option-label">{gameState.singleWordOnly ? 'Una palabra' : 'Palabras'}</span>
                 </div>
                 <div className="summary-option-card">
                   <div className="summary-option-icon">
@@ -2062,7 +2279,7 @@ const App = () => {
                         gameState.voteDisplayMode === 'hidden' 
                           ? "Votos ocultos" 
                           : gameState.voteDisplayMode === 'count' 
-                          ? "Recuento visible" 
+                          ? "Recuento" 
                           : "Votos visibles"
                       }
                       className="summary-option-icon-img"
@@ -2072,7 +2289,7 @@ const App = () => {
                     {gameState.voteDisplayMode === 'hidden' 
                       ? 'Votos ocultos' 
                       : gameState.voteDisplayMode === 'count' 
-                      ? 'Recuento visible' 
+                      ? 'Recuento' 
                       : 'Votos visibles'}
                   </span>
                 </div>
@@ -2140,6 +2357,12 @@ const App = () => {
               <p className="keyword">{gameState.secretWord}</p>
             </div>
           )}
+          {countdown !== null && (
+            <div className="countdown-container">
+              <p className="countdown-label">Empezando en...</p>
+              <div className="countdown-number">{countdown}</div>
+            </div>
+          )}
           <div className="player-order-container">
             <p className="player-order-label">Orden de turnos:</p>
             <div className="player-order-list">
@@ -2152,12 +2375,6 @@ const App = () => {
               ))}
             </div>
           </div>
-          {countdown !== null && (
-            <div className="countdown-container">
-              <p className="countdown-label">Empezando en...</p>
-              <div className="countdown-number">{countdown}</div>
-            </div>
-          )}
         </section>
       </div>
     );
@@ -2216,7 +2433,7 @@ const App = () => {
             ×
           </button>
         </header>
-        <div className="game-info-bar">
+        <div className="game-info-bar" style={{ marginBottom: '4px' }}>
           <div className="info-item">
             <span className="info-label">Impostores:</span>
             <span className="info-value">{impostorCount}</span>
@@ -2232,6 +2449,39 @@ const App = () => {
             <span className="info-value">{gameState.timeLimit ? `${gameState.timeLimit}s` : 'Sin límite'}</span>
           </div>
         </div>
+        <div 
+          className="game-info-bar"
+          style={{
+            cursor: 'pointer',
+            userSelect: 'none',
+            touchAction: 'manipulation',
+            background: isHoldingSecretWord ? 'rgba(139, 92, 246, 0.15)' : 'rgba(139, 92, 246, 0.06)',
+            borderColor: isHoldingSecretWord ? 'rgba(139, 92, 246, 0.3)' : 'rgba(139, 92, 246, 0.15)',
+            transition: 'background 0.2s ease, border-color 0.2s ease',
+            margin: '0 0 12px 0'
+          }}
+          onMouseDown={() => setIsHoldingSecretWord(true)}
+          onMouseUp={() => setIsHoldingSecretWord(false)}
+          onMouseLeave={() => setIsHoldingSecretWord(false)}
+          onTouchStart={() => setIsHoldingSecretWord(true)}
+          onTouchEnd={() => setIsHoldingSecretWord(false)}
+          onTouchCancel={() => setIsHoldingSecretWord(false)}
+        >
+          <div className="info-item" style={{ flex: 1, justifyContent: 'center' }}>
+            {isHoldingSecretWord ? (
+              <span className="info-value" style={{ fontSize: '0.8rem' }}>
+                {currentPlayer.isImpostor 
+                  ? `IMPOSTOR${gameState.showClue && gameState.selectedPlayerClue ? ` (${gameState.selectedPlayerClue})` : ''}`
+                  : gameState.secretWord}
+              </span>
+            ) : (
+              <span className="info-label" style={{ fontSize: '0.8rem' }}>
+                Mantén presionado para mostrar jugador
+              </span>
+            )}
+          </div>
+        </div>
+        <h3 style={{ textAlign: 'center', margin: '16px 0 12px 0', color: '#e0e7ff' }}>Respuestas</h3>
         <section className="clues">
           <ul>
             {alivePlayers.map((player) => {
@@ -2250,25 +2500,30 @@ const App = () => {
           </ul>
         </section>
         {turnPlayer ? (
-          <section className="turn">
-            <p>
-              Turno de <strong>{turnPlayer.name}</strong>
-            </p>
-            {gameState.timeLimit && turnTimeRemaining !== null && !hasGivenClueThisRound(gameState, turnPlayer.id) && (
-              <div className="turn-timer-bar">
-                <div 
-                  className="turn-timer-progress" 
-                  style={{ 
-                    width: `${(turnTimeRemaining / gameState.timeLimit) * 100}%`,
-                    transition: 'width 1s linear, background 0.5s ease',
-                    background: getProgressColor(turnTimeRemaining, gameState.timeLimit)
-                  }}
-                />
-              </div>
-            )}
-            {isMyTurn ? (
+          isMyTurn ? (
+            <section className="turn">
+              <p>
+                Turno de <strong>{turnPlayer.name}</strong>
+              </p>
+              {gameState.timeLimit && turnTimeRemaining !== null && !hasGivenClueThisRound(gameState, turnPlayer.id) && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div className="turn-timer-bar" style={{ flex: 1 }}>
+                    <div 
+                      className="turn-timer-progress" 
+                      style={{ 
+                        width: `${(turnTimeRemaining / gameState.timeLimit) * 100}%`,
+                        transition: 'width 1s linear, background 0.5s ease',
+                        background: getProgressColor(turnTimeRemaining, gameState.timeLimit)
+                      }}
+                    />
+                  </div>
+                  <span style={{ color: '#a78bfa', fontSize: '0.9rem', fontWeight: 600, minWidth: '30px', textAlign: 'right' }}>
+                    {turnTimeRemaining}s
+                  </span>
+                </div>
+              )}
               <form className="form-inline" onSubmit={handleClueSubmit}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: 0 }}>
+                <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
                   <input
                     autoFocus
                   value={clueInput}
@@ -2294,28 +2549,44 @@ const App = () => {
                     data-lpignore="true"
                     data-1p-ignore="true"
                     maxLength={30}
+                    style={{ paddingRight: '50px' }}
                   />
-                  <span style={{ fontSize: '0.75rem', color: '#9ca3af', textAlign: 'right' }}>
-                    {clueInput.length}/30
-                  </span>
+                  {clueInput.length > 20 && (
+                    <span style={{ 
+                      position: 'absolute',
+                      right: '12px',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      fontSize: '0.75rem', 
+                      color: '#9ca3af',
+                      pointerEvents: 'none',
+                      lineHeight: '1.2'
+                    }}>
+                      {clueInput.length}/30
+                    </span>
+                  )}
                 </div>
                 <button type="submit" className="primary" disabled={!clueInput.trim()}>
                   Enviar
                 </button>
               </form>
-            ) : (
-              <p className="waiting">Esperando la pista…</p>
-            )}
-          </section>
-        ) : (
-          <p className="waiting">Todas las pistas están dadas. ¡A votar!</p>
-        )}
-        {isHost && (
-          <footer className="footer">
-            <button type="button" className="primary" onClick={handleOpenVoting}>
-              Ir a votación
-            </button>
-          </footer>
+            </section>
+          ) : (
+            <div style={{ textAlign: 'center', padding: '20px 0' }}>
+              <p style={{ margin: '0 0 8px 0', color: '#e0e7ff', fontSize: '1rem' }}>
+                Turno de <strong>{turnPlayer.name}</strong>
+              </p>
+              <p style={{ margin: 0, color: '#a5b4fc', fontSize: '0.9rem' }}>
+                Esperando su respuesta
+              </p>
+            </div>
+          )
+        ) : null}
+        {revealCountdown !== null && revealCountdown > 0 && (
+          <div className="countdown-container">
+            <p className="countdown-label">Abriendo votaciones en...</p>
+            <div className="countdown-number">{revealCountdown}</div>
+          </div>
         )}
       </div>
     );
@@ -2339,9 +2610,22 @@ const App = () => {
       .filter(p => !cluesMap.has(p.id))
       .map(player => ({ player, clue: '-', createdAt: Infinity }));
     
-    // Combinar y ordenar todos los jugadores
+    // Combinar y ordenar todos los jugadores por orden de respuesta (que será el orden de votación)
     const allPlayersOrdered = [...playersWithClues, ...playersWithoutClues]
       .sort((a, b) => a.createdAt - b.createdAt);
+
+    // Verificar si el jugador actual ha votado (para el botón de confirmación)
+    const hasVoted = !!gameState.votes[playerId];
+
+    // Función para obtener quién ha votado a un jugador
+    const getVotersForPlayer = (targetPlayerId: string) => {
+      return Object.entries(gameState.votes)
+        .filter(([voterId, targetId]) => targetId === targetPlayerId)
+        .map(([voterId]) => {
+          const voter = gameState.players.find(p => p.id === voterId);
+          return voter ? voter.name : voterId;
+        });
+    };
 
     // Función para obtener el color del progreso (similar a la de pistas)
     const getProgressColor = (remaining: number, total: number) => {
@@ -2366,114 +2650,223 @@ const App = () => {
           </button>
         </header>
         {gameState.votingTimeLimit && votingTimeRemaining !== null && (
-          <div className="turn-timer-bar" style={{ margin: '16px 0' }}>
-            <div 
-              className="turn-timer-progress" 
-              style={{ 
-                width: `${(votingTimeRemaining / gameState.votingTimeLimit) * 100}%`,
-                transition: 'width 1s linear, background 0.5s ease',
-                background: getProgressColor(votingTimeRemaining, gameState.votingTimeLimit)
-              }}
-            />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '16px 0 24px 0' }}>
+            <div className="turn-timer-bar" style={{ flex: 1 }}>
+              <div 
+                className="turn-timer-progress" 
+                style={{ 
+                  width: `${(votingTimeRemaining / gameState.votingTimeLimit) * 100}%`,
+                  transition: 'width 1s linear, background 0.5s ease',
+                  background: getProgressColor(votingTimeRemaining, gameState.votingTimeLimit)
+                }}
+              />
+            </div>
+            <span style={{ color: '#a78bfa', fontSize: '0.9rem', fontWeight: 600, minWidth: '30px', textAlign: 'right' }}>
+              {votingTimeRemaining}s
+            </span>
           </div>
         )}
-        <section className="clues" style={{ marginBottom: '16px' }}>
-          <ul>
-            {allPlayersOrdered.map(({ player, clue }) => {
-              const isAuthor = player.id === playerId;
-              return (
-                <li key={player.id}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    {isAuthor && <span className="badge badge-you">Tú</span>}
-                    <span className="author">{player.name}</span>
+        <section className="vote-grid" style={{ marginTop: gameState.votingTimeLimit && votingTimeRemaining !== null ? '0' : '24px' }}>
+          {allPlayersOrdered.map(({ player, clue }) => {
+            const isCurrentPlayer = player.id === playerId;
+            const votesAgainst = Object.values(gameState.votes).filter((voteTarget) => voteTarget === player.id).length;
+            const voters = getVotersForPlayer(player.id);
+            const isSelected = currentPlayer.vote === player.id;
+            const isVoteConfirmed = gameState.confirmedVotes?.includes(playerId) ?? false;
+            const isVoteLocked = (!gameState.allowVoteChange && hasVoted && !isSelected) || (isVoteConfirmed && !isSelected);
+            
+            // Determinar el layout según el modo de visualización (estático, no cambia con votos)
+            const showVoteCount = gameState.voteDisplayMode !== 'hidden';
+            const showVoters = gameState.voteDisplayMode === 'visible';
+            
+            // Layout estático: 'visible' y 'count' usan grid 2x2, 'hidden' usa flex horizontal
+            const useGridLayout = showVoteCount;
+            
+            return (
+              <button
+                type="button"
+                key={player.id}
+                className={`vote-card${isSelected ? ' selected' : ''}${isCurrentPlayer ? ' disabled' : ''}${isVoteLocked ? ' locked' : ''}`}
+                onClick={() => !isCurrentPlayer && !isVoteLocked && handleVote(player.id)}
+                disabled={isCurrentPlayer || isVoteLocked}
+                style={{
+                  display: useGridLayout ? 'grid' : 'flex',
+                  gridTemplateColumns: useGridLayout ? '1fr 1fr' : undefined,
+                  gridTemplateRows: useGridLayout ? 'auto auto' : undefined,
+                  flexDirection: useGridLayout ? undefined : 'row',
+                  alignItems: useGridLayout ? 'start' : 'center',
+                  justifyContent: useGridLayout ? 'stretch' : 'center',
+                  gap: useGridLayout ? '8px 12px' : '16px',
+                  padding: '12px 16px',
+                  textAlign: useGridLayout ? 'left' : 'center',
+                  alignContent: useGridLayout ? 'stretch' : undefined
+                }}
+              >
+                {/* Nombre del jugador */}
+                <div style={{ 
+                  fontSize: '1.05rem', 
+                  fontWeight: 600, 
+                  color: '#e0e7ff',
+                  gridColumn: useGridLayout ? '1' : undefined,
+                  gridRow: useGridLayout ? '1' : undefined
+                }}>
+                  {player.name}
+                </div>
+                
+                {/* Recuento de votos con número grande */}
+                {showVoteCount && (
+                  <div style={{ 
+                    gridColumn: useGridLayout ? '2' : undefined,
+                    gridRow: useGridLayout ? '1' : undefined,
+                    textAlign: 'right',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'flex-end',
+                    justifyContent: 'center',
+                    gap: '2px'
+                  }}>
+                    <div style={{ 
+                      fontSize: '2rem', 
+                      color: '#a78bfa', 
+                      fontWeight: 700,
+                      lineHeight: '1'
+                    }}>
+                      {votesAgainst}
+                    </div>
                   </div>
-                  <span className="word">{clue}</span>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-        <section className="vote-grid">
-          {alivePlayers
-            .filter(player => player.id !== playerId) // Filtrar el jugador actual
-            .map((player) => {
-              const votesAgainst = Object.values(gameState.votes).filter((voteTarget) => voteTarget === player.id).length;
-              return (
-                <button
-                  type="button"
-                  key={player.id}
-                  className={`vote-card${currentPlayer.vote === player.id ? ' selected' : ''}`}
-                  onClick={() => handleVote(player.id)}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
-                    <span className="name">{player.name}</span>
+                )}
+                
+                {/* Palabra/Respuesta */}
+                <div style={{ 
+                  fontSize: '0.9rem', 
+                  color: '#a5b4fc',
+                  gridColumn: useGridLayout ? '1' : undefined,
+                  gridRow: useGridLayout ? '2' : undefined,
+                  textAlign: useGridLayout ? 'left' : 'center'
+                }}>
+                  {clue}
+                </div>
+                
+                {/* Votantes (siempre en la fila 2, columna 2) */}
+                {showVoters && (
+                  <div style={{ 
+                    gridColumn: useGridLayout ? '2' : undefined,
+                    gridRow: useGridLayout ? '2' : undefined,
+                    textAlign: useGridLayout ? 'right' : 'center',
+                    fontSize: '0.7rem', 
+                    color: '#9ca3af', 
+                    lineHeight: '1.2',
+                    maxWidth: '120px',
+                    wordBreak: 'break-word',
+                    marginLeft: useGridLayout ? 'auto' : undefined
+                  }}>
+                    {voters.length > 0 ? voters.join(', ') : 'Sin votos'}
                   </div>
-                  {gameState.voteDisplayMode === 'visible' && <span className="count">{votesAgainst} votos</span>}
-                  {gameState.voteDisplayMode === 'count' && <span className="count">{votesAgainst}</span>}
-                </button>
-              );
-            })}
+                )}
+              </button>
+            );
+          })}
         </section>
-        <footer className="footer">
-          <button 
-            type="button" 
-            className="secondary" 
-            onClick={handleClearVote}
-            disabled={!gameState.allowVoteChange}
-          >
-            Borrar mi voto
-          </button>
-          {isHost && (
-            <div className="host-actions">
-              <button type="button" className="secondary" onClick={handleResetVotes}>
-                Reiniciar votos
-              </button>
-              <button type="button" className="primary" onClick={handleFinalizeVoting} disabled={!allVotersSubmitted}>
-                Cerrar votación
-              </button>
+        {gameState.allowVoteChange && (
+          <div style={{ marginTop: '24px', display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center' }}>
+            <button
+              type="button"
+              className="button primary"
+              onClick={handleConfirmVote}
+              disabled={!hasVoted || (gameState.confirmedVotes?.includes(playerId) ?? false)}
+              style={{
+                opacity: (!hasVoted || (gameState.confirmedVotes?.includes(playerId) ?? false)) ? 0.5 : 1,
+                cursor: (!hasVoted || (gameState.confirmedVotes?.includes(playerId) ?? false)) ? 'not-allowed' : 'pointer'
+              }}
+            >
+              {gameState.confirmedVotes?.includes(playerId) ? 'Voto confirmado' : 'Confirmar voto'}
+            </button>
+            <div style={{ fontSize: '0.9rem', color: '#a5b4fc', textAlign: 'center' }}>
+              {gameState.confirmedVotes?.length ?? 0} votación{gameState.confirmedVotes?.length !== 1 ? 'es' : ''} confirmada{(gameState.confirmedVotes?.length ?? 0) !== 1 ? 's' : ''}
             </div>
-          )}
-        </footer>
+          </div>
+        )}
       </div>
     );
   };
 
   const renderReveal = () => {
-    if (!gameState || !gameState.elimination) return null;
-    const eliminated = gameState.players.find((player) => player.id === gameState.elimination?.targetId);
-    const impostorAlive = gameState.players.some((player) => player.isImpostor && player.alive);
+    if (!gameState) return null;
+    
+    // Si hay eliminación, mostrar resultado
+    if (gameState.elimination) {
+      const eliminated = gameState.players.find((player) => player.id === gameState.elimination?.targetId);
+      const gameEnded = gameState.winner !== undefined;
 
+      return (
+        <div className="card">
+          <header className="header">
+            <h2>Resultado</h2>
+          </header>
+          <section className="reveal-result">
+            <h3>
+              {eliminated?.name ?? 'Jugador desconocido'} ha sido eliminado
+            </h3>
+            <p style={{ fontSize: '1.2rem', marginTop: '16px' }}>
+              {gameState.elimination.wasImpostor ? (
+                <span style={{ color: '#ef4444', fontWeight: 600 }}>Era el impostor</span>
+              ) : (
+                <span style={{ color: '#10b981', fontWeight: 600 }}>Era inocente</span>
+              )}
+            </p>
+            {gameState.elimination.wasImpostor && (
+              <p style={{ marginTop: '16px' }}>
+                Palabra correcta: <strong>{gameState.secretWord}</strong>
+              </p>
+            )}
+            {gameEnded && (
+              <p style={{ fontSize: '1.3rem', marginTop: '24px', fontWeight: 600 }}>
+                {gameState.winner === 'impostor' ? (
+                  <span style={{ color: '#ef4444' }}>¡El impostor ha ganado!</span>
+                ) : (
+                  <span style={{ color: '#10b981' }}>¡Los civiles han ganado!</span>
+                )}
+              </p>
+            )}
+          </section>
+          <footer className="footer" style={{ marginTop: '24px' }}>
+            {isHost && (
+              <button type="button" className="button primary" onClick={handleContinueAfterReveal}>
+                Nueva partida
+              </button>
+            )}
+            {!isHost && (
+              <p style={{ color: '#a5b4fc', fontSize: '0.9rem', textAlign: 'center' }}>
+                Esperando al anfitrión para continuar...
+              </p>
+            )}
+          </footer>
+        </div>
+      );
+    }
+    
+    // Si no hay eliminación (empate), mostrar mensaje
     return (
       <div className="card">
         <header className="header">
           <h2>Resultado</h2>
         </header>
         <section className="reveal-result">
-          <h3>
-            {eliminated?.name ?? 'Jugador desconocido'} era
-            {gameState.elimination.wasImpostor ? ' el impostor' : ' inocente'}
-          </h3>
-          {gameState.elimination.wasImpostor && (
-            <p>
-              Palabra correcta: <strong>{gameState.secretWord}</strong>
+          <h3>Empate en la votación</h3>
+          <p>No se ha eliminado a nadie debido al empate.</p>
+        </section>
+        <footer className="footer" style={{ marginTop: '24px' }}>
+          {isHost && (
+            <button type="button" className="button primary" onClick={handleContinueAfterReveal}>
+              Nueva partida
+            </button>
+          )}
+          {!isHost && (
+            <p style={{ color: '#a5b4fc', fontSize: '0.9rem', textAlign: 'center' }}>
+              Esperando al anfitrión para continuar...
             </p>
           )}
-          {!gameState.elimination.wasImpostor && impostorAlive && (
-            <p>Quedan {getAlivePlayers(gameState).length} jugadores en pie. ¡Nueva ronda!</p>
-          )}
-        </section>
-        {isHost && (
-          <footer className="footer">
-            <button type="button" className="primary" onClick={handleContinueAfterReveal}>
-              {gameState.elimination.wasImpostor || getAlivePlayers(gameState).length <= 2
-                ? 'Volver al lobby'
-                : 'Siguiente ronda'}
-            </button>
-            <button type="button" className="secondary" onClick={handleLeaveRoom} style={{ marginTop: '8px' }}>
-              Cerrar sala
-            </button>
-          </footer>
-        )}
+        </footer>
       </div>
     );
   };
@@ -2539,30 +2932,36 @@ const finishElimination = (state: GameState, targetId: string, playersSnapshot: 
   const impostorAlive = updatedPlayers.some((player) => player.isImpostor && player.alive);
   const aliveCount = updatedPlayers.filter((player) => player.alive).length;
 
+  // Si no se encuentra el jugador eliminado, pasar a reveal de todas formas (caso de seguridad)
   if (!eliminatedPlayer) {
-    return state;
+    return {
+      ...state,
+      phase: 'reveal',
+      votes: {},
+      confirmedVotes: [],
+      elimination: undefined,
+      currentTurnIndex: -1,
+    };
   }
 
   const impostorWin = impostorAlive && aliveCount <= 2;
   const civiliansWin = !impostorAlive;
 
-  let phase: GameState['phase'] = 'reveal';
   let winner: GameState['winner'] = undefined;
 
-  // Ya no usamos la fase 'finished', volvemos al lobby cuando el juego termina
+  // Determinar el ganador, pero siempre pasar a fase 'reveal' primero
   if (impostorWin) {
-    phase = 'lobby';
     winner = 'impostor';
   } else if (civiliansWin) {
-    phase = 'lobby';
     winner = 'civilians';
   }
 
   return {
     ...state,
     players: updatedPlayers,
-    phase,
+    phase: 'reveal', // Siempre pasar a reveal primero, incluso si el juego terminó
     votes: {},
+    confirmedVotes: [],
     elimination: {
       targetId,
       wasImpostor: !!eliminatedPlayer.isImpostor,
