@@ -3,6 +3,7 @@ export type GamePhase =
   | 'wordReveal'
   | 'clue'
   | 'voting'
+  | 'tiebreaker'
   | 'reveal'
   | 'finished';
 
@@ -47,6 +48,11 @@ export interface GameState {
   clues: GameClue[];
   votes: Record<string, string>;
   confirmedVotes?: string[]; // IDs de jugadores que han confirmado su voto
+  tiebreaker?: {
+    tiedPlayers: string[]; // IDs de jugadores empatados
+    voteCount: number; // Número de votos con los que empataron
+    previousVotes: Record<string, string>; // Votos de la votación anterior
+  };
   elimination?: {
     targetId: string;
     wasImpostor: boolean;
