@@ -274,12 +274,8 @@ const App = () => {
     
     // Sincronizar isImpostor con impostorId para garantizar consistencia
     // Asegurar que exactamente UN jugador es impostor
-    let impostorFound = false;
     const normalizedPlayers = players.map((player: any) => {
       const isImpostor = impostorId ? player.id === impostorId : false;
-      if (isImpostor) {
-        impostorFound = true;
-      }
       return {
         ...player,
         isImpostor,
@@ -288,7 +284,7 @@ const App = () => {
     
     // Si hay impostorId pero no se encontró ningún jugador con ese ID, o si hay múltiples impostores, corregirlo
     if (impostorId) {
-      const impostorCount = normalizedPlayers.filter(p => p.isImpostor).length;
+      const impostorCount = normalizedPlayers.filter((p: any) => p.isImpostor).length;
       if (impostorCount !== 1) {
         console.warn(`Inconsistencia detectada: ${impostorCount} impostores encontrados. Corrigiendo...`);
         // Corregir: asegurar que solo el jugador con impostorId es impostor
@@ -910,18 +906,27 @@ const App = () => {
               // En caso de empate, pasar a fase tiebreaker
               if (tie || !eliminatedId) {
                 // Guardar los votos anteriores y pasar a tiebreaker
+                // Establecer automáticamente los votos previos para los jugadores que no están empatados
+                const initialVotes: Record<string, string> = {};
+                const playersWithVotes = updatedPlayers.map((player) => {
+                  // Mantener el voto solo si votó a uno de los empatados
+                  const playerVote = player.vote;
+                  const tiedPlayersArray = Array.isArray(tiedPlayers) ? tiedPlayers : [];
+                  const keptVote = playerVote && tiedPlayersArray.includes(playerVote) ? playerVote : undefined;
+                  
+                  // Si el jugador no está empatado y tiene un voto a uno de los empatados, establecerlo automáticamente
+                  if (!tiedPlayersArray.includes(player.id) && keptVote) {
+                    initialVotes[player.id] = keptVote;
+                  }
+                  
+                  return { ...player, vote: keptVote };
+                });
+                
                 return {
                   ...prev,
-                  votes: {}, // Limpiar votos para la nueva votación
+                  votes: initialVotes, // Establecer los votos previos automáticamente
                   confirmedVotes: [],
-                  players: updatedPlayers.map((player) => {
-                    // Mantener el voto solo si votó a uno de los empatados
-                    const playerVote = player.vote;
-                    const tiedPlayersArray = Array.isArray(tiedPlayers) ? tiedPlayers : [];
-                    const keptVote = playerVote && tiedPlayersArray.includes(playerVote) ? playerVote : undefined;
-                    const { vote, ...rest } = player;
-                    return { ...rest, vote: keptVote };
-                  }),
+                  players: playersWithVotes,
                   phase: 'tiebreaker',
                   tiebreaker: {
                     tiedPlayers: [...tiedPlayers],
@@ -1023,18 +1028,27 @@ const App = () => {
                 
                 // En caso de empate, pasar a fase tiebreaker
                 if (tie || !eliminatedId) {
+                  // Establecer automáticamente los votos previos para los jugadores que no están empatados
+                  const initialVotes: Record<string, string> = {};
+                  const playersWithVotes = prev.players.map((player) => {
+                    // Mantener el voto solo si votó a uno de los empatados
+                    const playerVote = player.vote;
+                    const tiedPlayersArray = Array.isArray(tiedPlayers) ? tiedPlayers : [];
+                    const keptVote = playerVote && tiedPlayersArray.includes(playerVote) ? playerVote : undefined;
+                    
+                    // Si el jugador no está empatado y tiene un voto a uno de los empatados, establecerlo automáticamente
+                    if (!tiedPlayersArray.includes(player.id) && keptVote) {
+                      initialVotes[player.id] = keptVote;
+                    }
+                    
+                    return { ...player, vote: keptVote };
+                  });
+                  
                   return {
                     ...prev,
-                    votes: {}, // Limpiar votos para la nueva votación
+                    votes: initialVotes, // Establecer los votos previos automáticamente
                     confirmedVotes: [],
-                    players: prev.players.map((player) => {
-                      // Mantener el voto solo si votó a uno de los empatados
-                      const playerVote = player.vote;
-                      const tiedPlayersArray = Array.isArray(tiedPlayers) ? tiedPlayers : [];
-                      const keptVote = playerVote && tiedPlayersArray.includes(playerVote) ? playerVote : undefined;
-                      const { vote, ...rest } = player;
-                      return { ...rest, vote: keptVote };
-                    }),
+                    players: playersWithVotes,
                     phase: 'tiebreaker',
                     tiebreaker: {
                       tiedPlayers: [...tiedPlayers],
@@ -1574,18 +1588,27 @@ const App = () => {
       
       // En caso de empate, pasar a fase tiebreaker
       if (tie || !targetId) {
+        // Establecer automáticamente los votos previos para los jugadores que no están empatados
+        const initialVotes: Record<string, string> = {};
+        const playersWithVotes = prev.players.map((player) => {
+          // Mantener el voto solo si votó a uno de los empatados
+          const playerVote = player.vote;
+          const tiedPlayersArray = Array.isArray(tiedPlayers) ? tiedPlayers : [];
+          const keptVote = playerVote && tiedPlayersArray.includes(playerVote) ? playerVote : undefined;
+          
+          // Si el jugador no está empatado y tiene un voto a uno de los empatados, establecerlo automáticamente
+          if (!tiedPlayersArray.includes(player.id) && keptVote) {
+            initialVotes[player.id] = keptVote;
+          }
+          
+          return { ...player, vote: keptVote };
+        });
+        
         return {
-      ...prev,
-          votes: {}, // Limpiar votos para la nueva votación
+          ...prev,
+          votes: initialVotes, // Establecer los votos previos automáticamente
           confirmedVotes: [],
-      players: prev.players.map((player) => {
-            // Mantener el voto solo si votó a uno de los empatados
-            const playerVote = player.vote;
-            const tiedPlayersArray = Array.isArray(tiedPlayers) ? tiedPlayers : [];
-            const keptVote = playerVote && tiedPlayersArray.includes(playerVote) ? playerVote : undefined;
-        const { vote, ...rest } = player;
-            return { ...rest, vote: keptVote };
-          }),
+          players: playersWithVotes,
           phase: 'tiebreaker',
           tiebreaker: {
             tiedPlayers: [...tiedPlayers],
@@ -1887,27 +1910,39 @@ const App = () => {
     } else {
       // Si no hay eliminación, es un empate - mostrar "No se ha eliminado a nadie"
       const textToShow = 'No se ha eliminado a nadie';
+      const gameEnded = gameState.winner !== undefined;
 
       // Animar el texto letra por letra
       let currentIndex = 0;
       let animationFrameId: number | null = null;
-      const targetInterval = 90;
+      const targetInterval = 90; // 90ms por letra - ritmo más pausado pero fluido, mantiene el drama
       let startTime = performance.now();
       
       const animate = (currentTime: number) => {
         const elapsed = currentTime - startTime;
         const expectedIndex = Math.floor(elapsed / targetInterval);
         
+        // Asegurar que el índice avance de forma consistente, sin saltos
         if (expectedIndex > currentIndex && expectedIndex <= textToShow.length) {
           currentIndex = expectedIndex;
           setRevealTextProgress(currentIndex);
         }
 
         if (currentIndex >= textToShow.length) {
+          // Asegurar que el texto completo se muestre
           setRevealTextProgress(textToShow.length);
           
+          // Después de 1 segundo de margen, mostrar pantalla de resultado con blur de salida
           setTimeout(() => {
+            // Primero aplicar blur de salida a la pantalla anterior
             setShowResultScreen(true);
+            
+            // Si la partida continúa (no ha terminado), avanzar automáticamente después de 3 segundos
+            if (!gameEnded && isHost) {
+              setTimeout(() => {
+                handleContinueAfterReveal();
+              }, 3000);
+            }
           }, 1000);
           return;
         }
@@ -2782,11 +2817,38 @@ const App = () => {
     const alivePlayers = playerOrder.filter(p => p.alive);
     const cluesMap = new Map(cluesCurrentRound.map(clue => [clue.playerId, clue.word]));
     
+    // Obtener todas las pistas de todas las rondas anteriores (hasta la ronda actual - 1)
+    const allPreviousClues = gameState.clues.filter(clue => clue.round < gameState.round);
+    
+    // Agrupar pistas anteriores por jugador y ordenar por ronda
+    const previousCluesByPlayer = new Map<string, Array<{ word: string; round: number; createdAt: number }>>();
+    allPreviousClues.forEach(clue => {
+      if (!previousCluesByPlayer.has(clue.playerId)) {
+        previousCluesByPlayer.set(clue.playerId, []);
+      }
+      previousCluesByPlayer.get(clue.playerId)!.push({
+        word: clue.word,
+        round: clue.round,
+        createdAt: clue.createdAt
+      });
+    });
+    
+    // Ordenar las pistas de cada jugador por ronda (orden cronológico)
+    previousCluesByPlayer.forEach((clues) => {
+      clues.sort((a, b) => a.round - b.round || a.createdAt - b.createdAt);
+    });
+    
     // Función para obtener el texto a mostrar (pista o "-" o "[SIN RESPUESTA]")
     const getClueText = (playerId: string): string => {
       const clue = cluesMap.get(playerId);
       if (clue) return clue;
       return '-';
+    };
+    
+    // Función para obtener las palabras anteriores de un jugador
+    const getPreviousWords = (playerId: string): string[] => {
+      const previousWords = previousCluesByPlayer.get(playerId) || [];
+      return previousWords.map(w => w.word);
     };
 
     // Calcular número de impostores
@@ -2860,11 +2922,22 @@ const App = () => {
             {alivePlayers.map((player) => {
               const isAuthor = player.id === playerId;
               const clueWord = getClueText(player.id);
+              const previousWords = getPreviousWords(player.id);
               return (
                 <li key={player.id}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                     <span className="author">{player.name}</span>
                     {isAuthor && <span className="badge badge-you">Tú</span>}
+                    {previousWords.length > 0 && (
+                      <span style={{ 
+                        fontSize: '0.85rem', 
+                        color: '#a5b4fc',
+                        marginLeft: 'auto',
+                        fontStyle: 'italic'
+                      }}>
+                        {previousWords.join(', ')}
+                      </span>
+                    )}
                   </div>
                   <span className="word">{clueWord}</span>
                 </li>
@@ -2968,22 +3041,65 @@ const App = () => {
   const renderVoting = () => {
     if (!gameState || !currentPlayer) return null;
 
-    // Obtener pistas de la ronda actual ordenadas por tiempo de creación
-    const cluesOrdered = [...cluesCurrentRound].sort((a, b) => a.createdAt - b.createdAt);
-    const cluesMap = new Map(cluesOrdered.map(clue => [clue.playerId, clue]));
+    // Obtener todas las pistas de todas las rondas hasta la actual (incluyendo jugadores muertos para orden cronológico)
+    const allClues = gameState.clues.filter(clue => clue.round <= gameState.round);
     
-    // Crear lista de jugadores con sus respuestas, ordenados por tiempo de respuesta
+    // Agrupar pistas por jugador y ordenar por ronda (orden cronológico)
+    const cluesByPlayer = new Map<string, Array<{ word: string; round: number; createdAt: number }>>();
+    allClues.forEach(clue => {
+      if (!cluesByPlayer.has(clue.playerId)) {
+        cluesByPlayer.set(clue.playerId, []);
+      }
+      cluesByPlayer.get(clue.playerId)!.push({
+        word: clue.word,
+        round: clue.round,
+        createdAt: clue.createdAt
+      });
+    });
+    
+    // Ordenar las pistas de cada jugador por ronda (orden cronológico)
+    cluesByPlayer.forEach((clues) => {
+      clues.sort((a, b) => a.round - b.round || a.createdAt - b.createdAt);
+    });
+    
+    // Obtener pistas de la ronda actual ordenadas por tiempo de creación (para el orden de votación)
+    const cluesOrdered = [...cluesCurrentRound].sort((a, b) => a.createdAt - b.createdAt);
+    
+    // Crear lista de jugadores con todas sus palabras, ordenados por tiempo de respuesta de la ronda actual
     const playersWithClues = cluesOrdered.map(clue => {
       const player = alivePlayers.find(p => p.id === clue.playerId);
-      return player ? { player, clue: clue.word, createdAt: clue.createdAt } : null;
-    }).filter((item): item is { player: typeof alivePlayers[0], clue: string, createdAt: number } => item !== null);
+      if (!player) return null;
+      
+      const allWords = cluesByPlayer.get(player.id) || [];
+      const lastWord = allWords[allWords.length - 1]?.word || '-';
+      const previousWords = allWords.slice(0, -1); // Todas excepto la última
+      
+      return { 
+        player, 
+        clue: lastWord, // Última palabra para compatibilidad
+        allWords, // Todas las palabras de todas las rondas
+        previousWords, // Palabras anteriores (sin la última)
+        createdAt: clue.createdAt 
+      };
+    }).filter((item): item is { player: typeof alivePlayers[0], clue: string, allWords: Array<{ word: string; round: number; createdAt: number }>, previousWords: Array<{ word: string; round: number; createdAt: number }>, createdAt: number } => item !== null);
     
-    // Añadir jugadores que no tienen pista (no debería pasar, pero por si acaso)
+    // Añadir jugadores que no tienen pista en la ronda actual
     const playersWithoutClues = alivePlayers
-      .filter(p => !cluesMap.has(p.id))
-      .map(player => ({ player, clue: '-', createdAt: Infinity }));
+      .filter(p => !cluesOrdered.some(clue => clue.playerId === p.id))
+      .map(player => {
+        const allWords = cluesByPlayer.get(player.id) || [];
+        const lastWord = allWords[allWords.length - 1]?.word || '-';
+        const previousWords = allWords.slice(0, -1); // Todas excepto la última
+        return { 
+          player, 
+          clue: lastWord,
+          allWords,
+          previousWords,
+          createdAt: Infinity 
+        };
+      });
     
-    // Combinar y ordenar todos los jugadores por orden de respuesta (que será el orden de votación)
+    // Combinar y ordenar todos los jugadores por orden de respuesta de la ronda actual
     const allPlayersOrdered = [...playersWithClues, ...playersWithoutClues]
       .sort((a, b) => a.createdAt - b.createdAt);
 
@@ -3040,7 +3156,7 @@ const App = () => {
           </div>
         )}
         <section className="vote-grid" style={{ marginTop: gameState.votingTimeLimit && votingTimeRemaining !== null ? '0' : '24px' }}>
-          {allPlayersOrdered.map(({ player, clue }) => {
+          {allPlayersOrdered.map(({ player, clue, allWords, previousWords }) => {
             const isCurrentPlayer = player.id === playerId;
             const votesAgainst = Object.values(gameState.votes).filter((voteTarget) => voteTarget === player.id).length;
             const voters = getVotersForPlayer(player.id);
@@ -3109,15 +3225,81 @@ const App = () => {
                   </div>
                 )}
                 
-                {/* Palabra/Respuesta */}
+                {/* Palabra/Respuesta - Mostrar "Anteriores:" y "Última:" en una sola línea */}
                 <div style={{ 
                   fontSize: '0.9rem', 
                   color: '#a5b4fc',
                   gridColumn: useGridLayout ? '1' : undefined,
                   gridRow: useGridLayout ? '2' : undefined,
-                  textAlign: useGridLayout ? 'left' : 'center'
+                  textAlign: useGridLayout ? 'left' : 'center',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px'
                 }}>
-                  {clue}
+                  {(() => {
+                    const prevWords = previousWords || [];
+                    const lastWordData = allWords && allWords.length > 0 ? allWords[allWords.length - 1] : null;
+                    const lastWord = lastWordData?.word || clue;
+                    
+                    // Si es la primera ronda (no hay palabras anteriores), mostrar solo la palabra
+                    if (prevWords.length === 0) {
+                      return <span>{lastWord}</span>;
+                    }
+                    
+                    // Si hay palabras anteriores, mostrar "Anteriores:" y "Última:" en líneas separadas pero cada una en una sola línea
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        {prevWords.length > 0 && (
+                          <div style={{ 
+                            display: 'flex', 
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: '6px',
+                            flexWrap: 'wrap'
+                          }}>
+                            <span style={{ 
+                              fontSize: '0.75rem', 
+                              color: '#6b7280',
+                              fontWeight: 500,
+                              whiteSpace: 'nowrap'
+                            }}>
+                              Anteriores:
+                            </span>
+                            <span style={{ 
+                              fontSize: '0.85rem', 
+                              color: '#a5b4fc',
+                              fontWeight: 400
+                            }}>
+                              {prevWords.map((w: { word: string }) => w.word).join(', ')}
+                            </span>
+                          </div>
+                        )}
+                        <div style={{ 
+                          display: 'flex', 
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: '6px',
+                          flexWrap: 'wrap'
+                        }}>
+                          <span style={{ 
+                            fontSize: '0.75rem', 
+                            color: '#a78bfa',
+                            fontWeight: 600,
+                            whiteSpace: 'nowrap'
+                          }}>
+                            Última:
+                          </span>
+                          <span style={{ 
+                            fontSize: '1rem', 
+                            color: '#e0e7ff',
+                            fontWeight: 700
+                          }}>
+                            {lastWord}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
                 
                 {/* Votantes (siempre en la fila 2, columna 2) */}
@@ -3188,9 +3370,10 @@ const App = () => {
     const cluesOrdered = [...cluesCurrentRound].sort((a, b) => a.createdAt - b.createdAt);
     const cluesMap = new Map(cluesOrdered.map(clue => [clue.playerId, clue]));
 
-    // Función para obtener quién ha votado a un jugador
-    const getVotersForPlayer = (targetPlayerId: string) => {
-      return Object.entries(gameState.votes)
+    // Función para obtener quién ha votado a un jugador (usar previousVotes para el contador inicial)
+    const getVotersForPlayer = (targetPlayerId: string, usePrevious: boolean = false) => {
+      const votesToUse = usePrevious ? previousVotes : gameState.votes;
+      return Object.entries(votesToUse)
         .filter(([, targetId]) => targetId === targetPlayerId)
         .map(([voterId]) => {
           const voter = gameState.players.find(p => p.id === voterId);
@@ -3217,9 +3400,9 @@ const App = () => {
     const showVoteCount = gameState.voteDisplayMode !== 'hidden';
     const showVoters = gameState.voteDisplayMode === 'visible';
     
-    // Pre-seleccionar el voto anterior si existe y el jugador aún no ha votado en esta ronda de tiebreaker
-    // Si hay un voto previo a uno de los empatados y el jugador aún no ha votado, usar ese voto
-    const currentVote = gameState.votes[playerId] || (previousVote && tiedPlayers.includes(previousVote) ? previousVote : currentPlayer.vote);
+    // El voto actual es el que está en el estado (que se establece automáticamente al entrar en tiebreaker)
+    // o el que el jugador ha seleccionado manualmente
+    const currentVote = gameState.votes[playerId] || currentPlayer.vote;
     const isVoteConfirmed = gameState.confirmedVotes?.includes(playerId) ?? false;
     const canInteract = !isTiedPlayer;
 
@@ -3265,8 +3448,13 @@ const App = () => {
           {tiedPlayersAlive.map((player) => {
             const clue = cluesMap.get(player.id)?.word || '-';
             const isSelected = currentVote === player.id;
-            const votesAgainst = Object.values(gameState.votes).filter((voteTarget) => voteTarget === player.id).length;
-            const voters = getVotersForPlayer(player.id);
+            // Mostrar el contador basado en previousVotes (votos de la votación anterior) si no hay votos nuevos aún
+            // Si hay votos nuevos, mostrar esos; si no, mostrar los previos
+            const hasNewVotes = Object.keys(gameState.votes).length > 0;
+            const votesAgainst = hasNewVotes 
+              ? Object.values(gameState.votes).filter((voteTarget) => voteTarget === player.id).length
+              : Object.values(previousVotes).filter((voteTarget) => voteTarget === player.id).length;
+            const voters = getVotersForPlayer(player.id, !hasNewVotes);
             const canChangeVote = gameState.allowVoteChange || !hasVoted;
             const isVoteLocked = (!canChangeVote && hasVoted && !isSelected) || (isVoteConfirmed && !isSelected);
             const isDisabled = !canInteract || isVoteLocked;
@@ -3589,29 +3777,201 @@ const App = () => {
       );
     }
     
-    // Si no hay eliminación (empate), mostrar mensaje
+    // Si no hay eliminación (empate), mostrar la misma pantalla de eliminación pero con "Empate" y "No se ha eliminado a nadie"
+    const gameEnded = gameState.winner !== undefined;
+    const eliminatedName = 'Empate';
+    
+    // Texto que se animará
+    const fullText = 'No se ha eliminado a nadie';
+    
+    // Texto visible según el progreso de la animación
+    const visibleText = fullText.slice(0, revealTextProgress);
+    
+    // Determinar qué mostrar en la pantalla de resultado
+    const nextRound = gameState.round + 1;
+    const impostorPlayer = gameState.players.find(p => p.isImpostor);
+    const civilianPlayers = gameState.players.filter(p => !p.isImpostor);
+
     return (
-      <div className="card">
-        <header className="header">
-          <h2>Resultado</h2>
-        </header>
-        <section className="reveal-result">
-          <h3>Empate en la votación</h3>
-          <p>No se ha eliminado a nadie debido al empate.</p>
-        </section>
-        <footer className="footer" style={{ marginTop: '24px' }}>
-        {isHost && (
-            <button type="button" className="button primary" onClick={handleContinueAfterReveal}>
-              Continuar
-            </button>
-          )}
-          {!isHost && (
-            <p style={{ color: '#a5b4fc', fontSize: '0.9rem', textAlign: 'center' }}>
-              Esperando al anfitrión para continuar...
+      <>
+        {/* Pantalla principal de revelación */}
+        <div 
+          className={`card reveal-animation-container ${showResultScreen ? 'blur-out' : ''}`}
+          style={{
+            transition: showResultScreen ? 'filter 0.8s ease-out, opacity 0.8s ease-out' : 'none',
+            filter: showResultScreen ? 'blur(15px)' : 'blur(0px)',
+            opacity: showResultScreen ? 0.3 : 1,
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
+            alignItems: 'center',
+            minHeight: '100vh',
+            maxHeight: '100vh',
+            padding: '40px 20px',
+            overflow: 'hidden',
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            width: '100%'
+          }}
+        >
+          <section className="reveal-result" style={{ 
+            display: 'flex', 
+            flexDirection: 'column', 
+            justifyContent: 'center', 
+            alignItems: 'center',
+            textAlign: 'center',
+            width: '100%'
+          }}>
+            {/* Nombre - "Empate" aparece inmediatamente */}
+            <h2 className="eliminated-name" style={{ 
+              fontSize: '32px', 
+              fontWeight: 700, 
+              marginBottom: '32px',
+              color: '#ffffff',
+              textAlign: 'center',
+              width: '100%'
+            }}>
+              {eliminatedName}
+            </h2>
+            
+            {/* Texto animado - aparece letra por letra */}
+            <p className="reveal-text-animated" style={{ 
+              fontSize: '24px', 
+              fontWeight: 600,
+              minHeight: '40px',
+              textAlign: 'center',
+              color: '#ffffff',
+              fontFamily: '"Inter", "Segoe UI", system-ui, -apple-system, sans-serif',
+              width: '100%'
+            }}>
+              {visibleText}
             </p>
-          )}
-        </footer>
-      </div>
+          </section>
+        </div>
+
+        {/* Pantalla de resultado con blur entrante */}
+        {showResultScreen && (
+          <div className="result-screen-overlay" style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(10, 14, 39, 0.95)',
+            backdropFilter: 'blur(20px)',
+            WebkitBackdropFilter: 'blur(20px)',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 1000,
+            padding: '20px',
+            animation: 'fadeInBlur 0.5s ease-in'
+          }}>
+            <div className="result-content" style={{
+              textAlign: 'center',
+              animation: 'slideInUp 0.6s ease-out'
+            }}>
+              {!gameEnded ? (
+                // La partida continúa - mostrar siguiente ronda
+                <>
+                  <h2 style={{ 
+                    fontSize: '36px', 
+                    fontWeight: 700, 
+                    color: '#ffffff',
+                    marginBottom: '24px'
+                  }}>
+                    Ronda {nextRound}
+                  </h2>
+                  <p style={{ 
+                    color: '#a5b4fc', 
+                    fontSize: '16px',
+                    marginTop: '16px'
+                  }}>
+                    La partida continúa...
+                  </p>
+                </>
+              ) : gameState.winner === 'impostor' ? (
+                // El impostor ganó
+                <>
+                  <h2 style={{ 
+                    fontSize: '36px', 
+                    fontWeight: 700, 
+                    color: '#ef4444',
+                    marginBottom: '24px'
+                  }}>
+                    Ganador
+                  </h2>
+                  {impostorPlayer && (
+                    <p style={{ 
+                      fontSize: '28px', 
+                      fontWeight: 600,
+                      color: '#ffffff',
+                      marginTop: '16px'
+                    }}>
+                      {impostorPlayer.name}
+                    </p>
+                  )}
+                </>
+              ) : (
+                // Los civiles ganaron
+                <>
+                  <h2 style={{ 
+                    fontSize: '36px', 
+                    fontWeight: 700, 
+                    color: '#10b981',
+                    marginBottom: '24px'
+                  }}>
+                    Ganadores
+                  </h2>
+                  <div style={{ marginTop: '16px' }}>
+                    {civilianPlayers.map((player, index) => (
+                      <p key={player.id} style={{ 
+                        fontSize: '24px', 
+                        fontWeight: 600,
+                        color: '#ffffff',
+                        marginBottom: index < civilianPlayers.length - 1 ? '12px' : '0'
+                      }}>
+                        {player.name}
+                      </p>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {gameEnded && (
+                <div style={{ marginTop: '40px' }}>
+                  {!isHost && (
+                    <p style={{
+                      color: '#a5b4fc',
+                      fontSize: '16px',
+                      animation: 'fadeIn 0.8s ease-in 0.3s both'
+                    }}>
+                      Esperando al anfitrión...
+                    </p>
+                  )}
+                  {isHost && (
+                    <button
+                      type="button"
+                      className="button primary"
+                      onClick={handleContinueAfterReveal}
+                      style={{
+                        marginTop: '24px',
+                        animation: 'fadeIn 0.8s ease-in 0.3s both'
+                      }}
+                    >
+                      Nueva partida
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </>
     );
   };
 
@@ -3661,6 +4021,55 @@ const App = () => {
         {roomCode && gameState && phase === 'tiebreaker' ? renderTiebreaker() : null}
       {roomCode && gameState && phase === 'reveal' ? renderReveal() : null}
       {statusMessage && <div className="status">{statusMessage}</div>}
+      
+      {/* Overlay para jugadores eliminados - Solo mostrar después de la revelación y si la partida continúa */}
+      {roomCode && gameState && currentPlayer && !currentPlayer.alive && 
+       gameState.phase !== 'reveal' && gameState.winner === undefined && (
+        <>
+          {/* Borde rojo alrededor de toda la pantalla */}
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            border: '4px solid rgba(239, 68, 68, 0.6)',
+            zIndex: 9998,
+            pointerEvents: 'none',
+            boxShadow: 'inset 0 0 0 4px rgba(239, 68, 68, 0.3)',
+          }} />
+          
+          {/* Mensaje en esquina superior izquierda */}
+          <div style={{
+            position: 'fixed',
+            top: '16px',
+            left: '16px',
+            zIndex: 9999,
+            pointerEvents: 'none',
+          }}>
+            <div style={{
+              backgroundColor: 'rgba(239, 68, 68, 0.2)',
+              border: '2px solid rgba(239, 68, 68, 0.6)',
+              borderRadius: '8px',
+              padding: '12px 20px',
+              textAlign: 'center',
+              backdropFilter: 'blur(2px)',
+              WebkitBackdropFilter: 'blur(2px)',
+              boxShadow: '0 4px 12px rgba(239, 68, 68, 0.3)',
+            }}>
+              <h3 style={{
+                fontSize: '18px',
+                fontWeight: 700,
+                color: '#ef4444',
+                margin: 0,
+                textShadow: '0 1px 2px rgba(0, 0, 0, 0.3)',
+              }}>
+                ELIMINADO
+              </h3>
+            </div>
+          </div>
+        </>
+      )}
     </main>
   );
   } catch (error) {
