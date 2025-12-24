@@ -215,6 +215,24 @@ const App = () => {
   const [turnTimeRemaining, setTurnTimeRemaining] = useState<number | null>(null);
   const [votingTimeRemaining, setVotingTimeRemaining] = useState<number | null>(null);
   const [revealCountdown, setRevealCountdown] = useState<number | null>(null);
+  
+  // Estados para modo local (un solo dispositivo)
+  const [isLocalMode, setIsLocalMode] = useState(false);
+  const [localPlayers, setLocalPlayers] = useState<string[]>([]);
+  const [localPlayerInput, setLocalPlayerInput] = useState('');
+  const [currentLocalPlayerIndex, setCurrentLocalPlayerIndex] = useState(0);
+  const [localGameState, setLocalGameState] = useState<{
+    topic: string;
+    secretWord: string;
+    selectedPlayerClue?: string;
+    showClue: boolean;
+    impostorId: string;
+    players: Array<{ id: string; name: string; isImpostor: boolean }>;
+    firstSpeakerIndex: number;
+  } | null>(null);
+  const [localPhase, setLocalPhase] = useState<'players' | 'config' | 'reveal' | 'game' | 'finished'>('players');
+  const [isHoldingReveal, setIsHoldingReveal] = useState(false);
+  const [hasRevealedOnce, setHasRevealedOnce] = useState(false);
   const [tiebreakerTimeRemaining, setTiebreakerTimeRemaining] = useState<number | null>(null);
   const [isHoldingSecretWord, setIsHoldingSecretWord] = useState<boolean>(false);
   const [revealTextProgress, setRevealTextProgress] = useState<number>(0);
@@ -274,24 +292,39 @@ const App = () => {
     
     // Sincronizar isImpostor con impostorId para garantizar consistencia
     // Asegurar que exactamente UN jugador es impostor
+    // IMPORTANTE: impostorId es la fuente de verdad única
     const normalizedPlayers = players.map((player: any) => {
+      // Siempre usar impostorId como fuente de verdad, ignorar cualquier valor previo de isImpostor
       const isImpostor = impostorId ? player.id === impostorId : false;
       return {
         ...player,
-        isImpostor,
+        isImpostor, // Sincronizar explícitamente
       };
     });
     
-    // Si hay impostorId pero no se encontró ningún jugador con ese ID, o si hay múltiples impostores, corregirlo
+    // VERIFICACIÓN CRÍTICA: Si hay impostorId, debe haber exactamente UN jugador con ese ID marcado como impostor
     if (impostorId) {
       const impostorCount = normalizedPlayers.filter((p: any) => p.isImpostor).length;
       if (impostorCount !== 1) {
-        console.warn(`Inconsistencia detectada: ${impostorCount} impostores encontrados. Corrigiendo...`);
+        console.warn(`Inconsistencia detectada en normalizeState: ${impostorCount} impostores encontrados. Corrigiendo...`);
         // Corregir: asegurar que solo el jugador con impostorId es impostor
         normalizedPlayers.forEach((player: any) => {
           player.isImpostor = player.id === impostorId;
         });
+        // Verificar nuevamente después de la corrección
+        const correctedCount = normalizedPlayers.filter((p: any) => p.isImpostor).length;
+        if (correctedCount !== 1) {
+          console.error(`Error crítico en normalizeState: No se pudo corregir. ImpostorId: ${impostorId}, Jugadores: ${normalizedPlayers.map((p: any) => ({ id: p.id, isImpostor: p.isImpostor }))}`);
+        }
       }
+    } else {
+      // Si no hay impostorId, asegurar que ningún jugador es impostor
+      normalizedPlayers.forEach((player: any) => {
+        if (player.isImpostor) {
+          console.warn(`Jugador ${player.id} marcado como impostor pero no hay impostorId. Corrigiendo...`);
+          player.isImpostor = false;
+        }
+      });
     }
     
     return {
@@ -1605,7 +1638,7 @@ const App = () => {
         });
         
         return {
-          ...prev,
+      ...prev,
           votes: initialVotes, // Establecer los votos previos automáticamente
           confirmedVotes: [],
           players: playersWithVotes,
@@ -2276,10 +2309,7 @@ const App = () => {
         <button 
           type="button" 
           className="secondary" 
-          onClick={() => {
-            setStatusMessage('Próximamente: modo local en un solo dispositivo');
-            setTimeout(() => setStatusMessage(null), 3000);
-          }}
+          onClick={() => setIsLocalMode(true)}
           disabled={!playerName.trim()}
         >
           Jugar en este dispositivo
@@ -2342,6 +2372,444 @@ const App = () => {
       </div>
     </div>
   );
+
+  // ========== MODO LOCAL (UN SOLO DISPOSITIVO) ==========
+  
+  const handleAddLocalPlayer = () => {
+    const trimmed = sanitizeName(localPlayerInput);
+    if (!trimmed) return;
+    if (localPlayers.length >= 6) {
+      setStatusMessage('Máximo 6 jugadores.');
+      return;
+    }
+    if (localPlayers.some(name => name.toLowerCase() === trimmed.toLowerCase())) {
+      setStatusMessage('Ese nombre ya está en la lista.');
+      return;
+    }
+    setLocalPlayers([...localPlayers, trimmed]);
+    setLocalPlayerInput('');
+  };
+
+  const handleRemoveLocalPlayer = (index: number) => {
+    setLocalPlayers(localPlayers.filter((_, i) => i !== index));
+  };
+
+  const handleStartLocalConfig = () => {
+    if (localPlayers.length < 3) {
+      setStatusMessage('Se necesitan al menos 3 jugadores.');
+      return;
+    }
+    setLocalPhase('config');
+    setStatusMessage(null);
+  };
+
+  const handleStartLocalGame = () => {
+    if (!selectedTopicId) {
+      setStatusMessage('Selecciona una temática.');
+      return;
+    }
+
+    const selectedTopic = topics[selectedTopicId];
+    const randomPlayer = getRandomPlayerForTopic(selectedTopicId);
+    if (!randomPlayer) {
+      setStatusMessage('No hay jugadores disponibles para esta temática.');
+      return;
+    }
+
+    // Crear jugadores con IDs únicos
+    const players = localPlayers.map((name, index) => ({
+      id: `local-${index}-${Date.now()}`,
+      name,
+      isImpostor: false,
+    }));
+
+    // Seleccionar impostor aleatoriamente
+    const impostorIndex = Math.floor(Math.random() * players.length);
+    const impostorId = players[impostorIndex].id;
+    players[impostorIndex].isImpostor = true;
+
+    // Seleccionar primer hablante aleatoriamente
+    const firstSpeakerIndex = Math.floor(Math.random() * players.length);
+
+    setLocalGameState({
+      topic: selectedTopic.name,
+      secretWord: randomPlayer.name,
+      selectedPlayerClue: randomPlayer.clue,
+      showClue: showClueOption,
+      impostorId,
+      players,
+      firstSpeakerIndex,
+    });
+
+    setCurrentLocalPlayerIndex(0);
+    setLocalPhase('reveal');
+    setStatusMessage(null);
+  };
+
+  const handleNextLocalPlayer = () => {
+    if (currentLocalPlayerIndex < localPlayers.length - 1) {
+      setCurrentLocalPlayerIndex(currentLocalPlayerIndex + 1);
+      setIsHoldingReveal(false);
+      setHasRevealedOnce(false); // Reset para el siguiente jugador
+    } else {
+      // Último jugador, pasar a la fase de juego
+      setLocalPhase('game');
+      setIsHoldingReveal(false);
+      setHasRevealedOnce(false);
+    }
+  };
+
+  const handleNewLocalGame = () => {
+    // Mantener la lista de jugadores pero resetear el resto
+    setLocalPlayerInput('');
+    setCurrentLocalPlayerIndex(0);
+    setLocalGameState(null);
+    setLocalPhase('config'); // Ir directamente a configuración
+    setSelectedTopicId(null);
+    setShowClueOption(true);
+    setIsHoldingReveal(false);
+    setHasRevealedOnce(false);
+    setStatusMessage(null);
+  };
+
+  const renderLocalPlayers = () => (
+    <div className="card">
+      <header className="header">
+        <h2>Jugadores</h2>
+        <button type="button" className="close-button" onClick={() => setIsLocalMode(false)} aria-label="Cerrar">
+          ×
+        </button>
+      </header>
+      <p style={{ textAlign: 'center', color: '#a5b4fc', marginBottom: '20px', marginTop: '40px' }}>
+        Introduce los nombres de los jugadores (3-6)
+      </p>
+      
+      <div style={{ marginBottom: '12px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <input
+          value={localPlayerInput}
+          onChange={(event) => setLocalPlayerInput(event.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              handleAddLocalPlayer();
+            }
+          }}
+          placeholder=" Nombre del jugador"
+          
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck="false"
+          maxLength={20}
+          style={{
+            height: '28px',
+            padding: '4px 8px',
+            fontSize: '0.9rem',
+            flex: 1
+          }}
+        />
+        <button
+          type="button"
+          className="button"
+          onClick={handleAddLocalPlayer}
+          disabled={!localPlayerInput.trim() || localPlayers.length >= 6}
+          style={{
+            minHeight: '54px',
+            height: '54px',
+            padding: '2px 8px',
+            fontSize: '0.75rem',
+            minWidth: '120px',
+            width: '120px',
+            color: '666',
+          }}
+        >
+          Añadir
+        </button>
+      </div>
+
+      {localPlayers.length > 0 && (
+        <section style={{ marginBottom: '20px' }}>
+          <h3 style={{ fontSize: '1rem', marginBottom: '12px', color: '#e0e7ff' }}>Lista de jugadores ({localPlayers.length}/6)</h3>
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+            {localPlayers.map((name, index) => (
+              <li key={index} style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '8px 12px',
+                marginBottom: '6px',
+                backgroundColor: 'rgba(139, 92, 246, 0.1)',
+                borderRadius: '6px',
+                border: '1px solid rgba(139, 92, 246, 0.2)',
+                position: 'relative'
+              }}>
+                <span style={{ color: '#e0e7ff', fontWeight: 500 }}>{name}</span>
+                <button
+                  type="button"
+                  onClick={() => handleRemoveLocalPlayer(index)}
+                  style={{
+                    position: 'absolute',
+                    right: '8px',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    background: 'none',
+                    border: 'none',
+                    color: '#ef4444',
+                    cursor: 'pointer',
+                    fontSize: '1.2rem',
+                    lineHeight: 1,
+                    padding: '2px',
+                    width: '20px',
+                    height: '20px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderRadius: '50%',
+                    transition: 'background-color 0.2s ease'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.2)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = 'transparent';
+                  }}
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <footer className="footer">
+        <button 
+          type="button" 
+          className="button primary" 
+          onClick={handleStartLocalConfig}
+          disabled={localPlayers.length < 3}
+        >
+          Empezar partida
+        </button>
+      </footer>
+    </div>
+  );
+
+  const renderLocalConfig = () => (
+    <div className="card">
+      <header className="header">
+        <h2>Configuración de la partida</h2>
+        <button type="button" className="close-button" onClick={() => setLocalPhase('players')} aria-label="Volver">
+          ×
+        </button>
+      </header>
+      
+      <section style={{ marginBottom: '24px' }}>
+        <h3 style={{ fontSize: '1rem', marginBottom: '12px', color: '#e0e7ff', marginTop: '20px'}}>Temática</h3>
+        <div className="topic-buttons">
+          {Object.values(topics).map((topic) => (
+            <button
+              key={topic.id}
+              type="button"
+              className={`topic-button ${selectedTopicId === topic.id ? 'selected' : ''}`}
+              onClick={() => setSelectedTopicId(topic.id)}
+              disabled={!topic.hasPlayers}
+            >
+              <span className="topic-icon">
+                <img
+                  src={`/${topic.id}.png`}
+                  alt={topic.name}
+                  className="topic-icon-img"
+                />
+              </span>
+              <span className="topic-name">{topic.name}</span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section style={{ marginBottom: '24px' }}>
+        <h3 style={{ fontSize: '1rem', marginBottom: '12px', color: '#e0e7ff' }}>Pista</h3>
+        <div style={{ display: 'flex', gap: '12px' }}>
+          <button
+            type="button"
+            className={`button ${showClueOption ? 'primary' : ''}`}
+            onClick={() => setShowClueOption(true)}
+            style={{ flex: 1 }}
+          >
+            Sí
+          </button>
+          <button
+            type="button"
+            className={`button ${!showClueOption ? 'primary' : ''}`}
+            onClick={() => setShowClueOption(false)}
+            style={{ flex: 1 }}
+          >
+            No
+          </button>
+        </div>
+      </section>
+
+      <footer className="footer">
+        <button 
+          type="button" 
+          className="button primary" 
+          onClick={handleStartLocalGame}
+          disabled={!selectedTopicId}
+        >
+          Empezar partida
+        </button>
+      </footer>
+    </div>
+  );
+
+  const renderLocalReveal = () => {
+    if (!localGameState) return null;
+    
+    const currentPlayer = localGameState.players[currentLocalPlayerIndex];
+    const isImpostor = currentPlayer.id === localGameState.impostorId;
+    const isLastPlayer = currentLocalPlayerIndex === localPlayers.length - 1;
+
+    return (
+      <div className="card">
+        <header className="header" style={{justifyContent: 'center', marginTop: '20px'}}>
+          <h2>{currentPlayer.name}</h2>
+        </header>
+        
+        <section className="reveal" style={{ minHeight: '300px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+          <p style={{ fontSize: '1.2rem', color: '#a5b4fc', textAlign: 'center', marginBottom: '20px' }}>
+            Haz clic para ver la palabra
+          </p>
+
+          {/* Recuadro único que cambia de contenido */}
+          <div
+            style={{
+              width: '300px',
+              height: '300px',
+              borderRadius: '12px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center',
+              alignItems: 'center',
+              cursor: 'pointer',
+              userSelect: 'none',
+              touchAction: 'manipulation',
+              marginTop: '20px',
+            }}
+            onClick={() => {
+              if (!hasRevealedOnce) {
+                setHasRevealedOnce(true);
+              }
+              setIsHoldingReveal(!isHoldingReveal);
+            }}
+          >
+            {isHoldingReveal ? (
+              // Contenido revelado
+              isImpostor ? (
+                <div style={{
+                  width: '100%',
+                  height: '100%',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  borderRadius: '12px',
+                  backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                  border: '2px solid rgba(239, 68, 68, 0.3)',
+                }}>
+                  <h3 style={{ margin: '0 0 10px 0', fontSize: '1.1rem' }}>
+                    {localGameState.showClue && localGameState.selectedPlayerClue ? (
+                      <>Pista: <span style={{ fontWeight: 'normal', fontSize: '0.9em' }}>{localGameState.selectedPlayerClue}</span></>
+                    ) : (
+                      'No hay pista'
+                    )}
+                  </h3>
+                  <p className="keyword" style={{ fontSize: '1.8rem', margin: 0 }}>IMPOSTOR</p>
+                </div>
+              ) : (
+                <div style={{
+                  width: '100%',
+                  height: '100%',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  borderRadius: '12px',
+                  backgroundColor: 'rgba(139, 92, 246, 0.1)',
+                  border: '2px solid rgba(139, 92, 246, 0.3)',
+                }}>
+                  <h3 style={{ margin: '0 0 10px 0', fontSize: '1.1rem' }}>Jugador secreto</h3>
+                  <p className="keyword" style={{ fontSize: '1.8rem', margin: 0 }}>{localGameState.secretWord}</p>
+                </div>
+              )
+            ) : (
+              // Recuadro inicial
+              <div style={{
+                width: '100%',
+                height: '100%',
+                border: '2px dashed rgba(139, 92, 246, 0.4)',
+                borderRadius: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: 'rgba(139, 92, 246, 0.05)',
+              }}>
+                <span style={{ color: '#6b7280', fontSize: '0.9rem' }}>Haz clic aquí</span>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {hasRevealedOnce && (
+          <footer className="footer">
+            <button 
+              type="button" 
+              className="button primary" 
+              onClick={handleNextLocalPlayer}
+            >
+              {isLastPlayer ? 'Jugar' : 'Siguiente jugador'}
+            </button>
+          </footer>
+        )}
+      </div>
+    );
+  };
+
+  const renderLocalGame = () => {
+    if (!localGameState) return null;
+    
+    const firstSpeaker = localGameState.players[localGameState.firstSpeakerIndex];
+
+    return (
+      <div className="card">
+        <header className="header" style={{justifyContent: 'center'}}>
+          <h2>¡Empieza la partida!</h2>
+        </header>
+        
+        <section style={{ textAlign: 'center', padding: '40px 20px' }}>
+          <p style={{ fontSize: '1.2rem', color: '#a5b4fc', marginBottom: '20px' }}>
+            El primer jugador en hablar es:
+          </p>
+          <h2 style={{ fontSize: '2rem', color: '#e0e7ff', marginBottom: '30px' }}>
+            {firstSpeaker.name}
+          </h2>
+          <p style={{ fontSize: '1rem', color: '#6b7280' }}>
+            Los jugadores se encargarán de gestionar los turnos y las votaciones.
+          </p>
+        </section>
+
+        <footer className="footer">
+          <button 
+            type="button" 
+            className="button primary" 
+            onClick={handleNewLocalGame}
+          >
+            Nueva partida
+          </button>
+        </footer>
+      </div>
+    );
+  };
 
   const renderLobby = () => {
     // Si no hay gameState pero hay roomCode, mostrar estado de carga
@@ -2732,9 +3200,9 @@ const App = () => {
 
     const playerOrder = getPlayerOrder(gameState);
     
-    // Verificar si el jugador actual es el impostor usando tanto isImpostor como impostorId
-    // Esto asegura que siempre detectemos correctamente al impostor
-    const isImpostor = currentPlayer.isImpostor || (gameState.impostorId && currentPlayer.id === gameState.impostorId);
+    // Usar impostorId como fuente de verdad única para determinar si el jugador es impostor
+    // Esto asegura consistencia incluso si isImpostor no está sincronizado
+    const isImpostor = gameState.impostorId ? currentPlayer.id === gameState.impostorId : false;
 
     return (
       <div className="card">
@@ -3593,7 +4061,7 @@ const App = () => {
       const impostorPlayer = gameState.players.find(p => p.isImpostor);
       const civilianPlayers = gameState.players.filter(p => !p.isImpostor);
 
-      return (
+    return (
         <>
           {/* Pantalla principal de revelación */}
           <div 
@@ -3714,8 +4182,8 @@ const App = () => {
                         marginTop: '16px'
                       }}>
                         {impostorPlayer.name}
-                      </p>
-                    )}
+            </p>
+          )}
                   </>
                 ) : (
                   // Los civiles ganaron
@@ -3849,7 +4317,7 @@ const App = () => {
             }}>
               {visibleText}
             </p>
-          </section>
+        </section>
         </div>
 
         {/* Pantalla de resultado con blur entrante */}
@@ -3953,7 +4421,7 @@ const App = () => {
                       Esperando al anfitrión...
                     </p>
                   )}
-                  {isHost && (
+        {isHost && (
                     <button
                       type="button"
                       className="button primary"
@@ -3964,9 +4432,9 @@ const App = () => {
                       }}
                     >
                       Nueva partida
-                    </button>
-                  )}
-                </div>
+            </button>
+        )}
+      </div>
               )}
             </div>
           </div>
@@ -4013,7 +4481,15 @@ const App = () => {
   try {
   return (
     <main className="app">
-      {!roomCode ? renderHome() : null}
+      {/* Modo local (un solo dispositivo) */}
+      {isLocalMode && !roomCode ? (
+        <>
+          {localPhase === 'players' && renderLocalPlayers()}
+          {localPhase === 'config' && renderLocalConfig()}
+          {localPhase === 'reveal' && renderLocalReveal()}
+          {localPhase === 'game' && renderLocalGame()}
+        </>
+      ) : !roomCode ? renderHome() : null}
       {roomCode && (!gameState || phase === 'lobby') ? renderLobby() : null}
       {roomCode && gameState && phase === 'wordReveal' ? renderWordReveal() : null}
       {roomCode && gameState && phase === 'clue' ? renderCluePhase() : null}
