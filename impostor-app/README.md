@@ -1,76 +1,84 @@
-# Impostor Online (versión web móvil)
+# Impostor Game
 
-Prototipo funcional del juego social "Impostor" optimizado para móviles. Los jugadores se unen mediante un código de sala, comparten pistas sobre una palabra secreta y votan para descubrir al impostor.
+Un juego de impostor para jugar en grupo, tanto online como en un solo dispositivo.
 
-## Requisitos previos
+## 🚀 Despliegue en GitHub Pages
 
-- Node.js 18 o superior
-- Una cuenta de [Firebase](https://firebase.google.com/) con Realtime Database configurado (consulta `FIREBASE_SETUP.md` para más detalles)
+### 1. Configurar GitHub Pages
 
-## Configuración rápida
+1. Ve a tu repositorio en GitHub
+2. Ve a **Settings → Pages**
+3. En **Source**, selecciona **"GitHub Actions"**
+4. El workflow se activará automáticamente con cada push
 
-1. Instala las dependencias:
+### 2. Configurar Variables de Entorno
 
-   ```bash
-   npm install
-   ```
+Para que funcione el modo online, necesitas configurar las variables de Firebase:
 
-2. Crea un archivo `.env.local` en la carpeta `impostor-app` con tu configuración de Firebase:
+1. Ve a **Settings → Secrets and variables → Actions**
+2. Añade las siguientes **Repository secrets** (no variables de entorno, sino secrets):
 
-   ```bash
-   VITE_FIREBASE_API_KEY=TU_API_KEY
-   VITE_FIREBASE_AUTH_DOMAIN=TU_AUTH_DOMAIN
-   VITE_FIREBASE_DATABASE_URL=TU_DATABASE_URL
-   VITE_FIREBASE_PROJECT_ID=TU_PROJECT_ID
-   VITE_FIREBASE_STORAGE_BUCKET=TU_STORAGE_BUCKET
-   VITE_FIREBASE_MESSAGING_SENDER_ID=TU_MESSAGING_SENDER_ID
-   VITE_FIREBASE_APP_ID=TU_APP_ID
-   VITE_BASE_PATH=/
-   ```
+```
+VITE_FIREBASE_API_KEY=tu_api_key_aqui
+VITE_FIREBASE_AUTH_DOMAIN=tu_proyecto.firebaseapp.com
+VITE_FIREBASE_DATABASE_URL=https://tu-proyecto-default-rtdb.europe-west1.firebasedatabase.app
+VITE_FIREBASE_PROJECT_ID=tu-proyecto
+VITE_FIREBASE_STORAGE_BUCKET=tu-proyecto.appspot.com
+VITE_FIREBASE_MESSAGING_SENDER_ID=123456789012
+VITE_FIREBASE_APP_ID=1:123456789012:web:abcdef123456
+```
 
-   Consulta `FIREBASE_SETUP.md` para obtener estas credenciales paso a paso.
+### 3. Configurar Firebase Database Rules
 
-   - Para GitHub Pages en `https://usuario.github.io/impostor/`, usa `VITE_BASE_PATH=/impostor/`.
+Ve a **Firebase Console → Realtime Database → Rules** y establece:
 
-3. Inicia el entorno de desarrollo:
+```json
+{
+  "rules": {
+    ".read": "auth == null",
+    ".write": "auth == null",
+    "rooms": {
+      "$roomId": {
+        ".read": true,
+        ".write": true
+      }
+    }
+  }
+}
+```
 
-   ```bash
-   npm run dev
-   ```
+### 4. Hacer Deploy
 
-   La aplicación estará disponible en `http://localhost:5173`.
+1. Haz push de todos los cambios al branch `main`
+2. Ve a la pestaña **Actions** en GitHub
+3. Espera a que termine el workflow "Deploy to GitHub Pages"
+4. Tu web estará disponible en: `https://[tu-usuario].github.io/impostor/`
 
-## Flujo de juego
+## 🎮 Cómo Jugar
 
-1. El anfitrión crea una sala y comparte el código.
-2. Los demás jugadores se unen con su nombre y el código.
-3. El anfitrión define la temática y la palabra secreta y empieza la partida.
-4. En la fase de pistas, cada jugador comparte una palabra relacionada (excepto el impostor que no conoce la palabra).
-5. Tras una ronda de pistas, se abre la votación para eliminar a un jugador.
-6. El juego revela si el eliminado era el impostor y continúa hasta que el impostor es descubierto o solo quedan dos jugadores vivos.
+### Modo Online:
+1. Crea una sala o únete con un código
+2. Espera a que se unan los jugadores (3-6)
+3. Configura la temática y opciones
+4. ¡Disfruta la partida!
 
-## Comandos disponibles
+### Modo Local (Un dispositivo):
+1. Selecciona "Jugar en este dispositivo"
+2. Introduce los nombres de los jugadores
+3. Configura la partida
+4. Pasa el dispositivo a cada jugador para que vea su rol
+5. Los jugadores gestionan el resto del juego
 
-- `npm run dev`: inicia el modo desarrollo con recarga en caliente.
-- `npm run build`: genera la versión de producción en `dist/`.
-- `npm run preview`: sirve la build de producción localmente.
+## 🛠️ Desarrollo Local
 
-## Despliegue en GitHub Pages
+```bash
+cd impostor-app
+npm install
+npm run dev
+```
 
-1. Establece `VITE_BASE_PATH=/impostor/` (sustituye `impostor` por el nombre real del repositorio si es distinto).
-2. Ejecuta `npm run build`.
-3. Publica el contenido de la carpeta `dist/` en la rama `gh-pages` (puedes usar [GitHub Actions](https://github.com/actions/starter-workflows/blob/main/pages/static.yml) o un deploy manual).
+## 📝 Tecnologías
 
-> Nota: debido a que se trata de una aplicación solo frontend, las credenciales de Firebase pueden estar en el cliente, pero recuerda configurar las reglas de seguridad de Realtime Database para evitar modificaciones indeseadas.
-
-## Próximos pasos sugeridos
-
-- Añadir persistencia en Firebase (p. ej. almacenamiento de partidas y métricas).
-- Implementar transferencia de anfitrión si el creador abandona la sala.
-- Añadir control de empates durante las votaciones (ej. segundas rondas automáticas o desempate del anfitrión).
-- Preparar una variante con soporte para escritorio.
-
-## Atribuciones
-
-- **Favicon**: Impostor by Luis Prado from [Noun Project](https://thenounproject.com/browse/icons/term/impostor/) (CC BY 3.0)
-
+- React + TypeScript + Vite
+- Firebase Realtime Database
+- GitHub Pages para hosting
