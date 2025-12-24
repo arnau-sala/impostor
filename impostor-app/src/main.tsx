@@ -3,6 +3,14 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import './style.css';
 
+import { signInAnonymously } from "firebase/auth";
+import { auth } from "./firebase"; // 👈 AÑADIR ESTO
+
+// 🔐 Login anónimo al arrancar la app
+signInAnonymously(auth).catch((error) => {
+  console.error("Error en auth anónima:", error);
+});
+
 const rootElement = document.getElementById('app');
 if (!rootElement) {
   throw new Error('No se encontró el elemento #app');
